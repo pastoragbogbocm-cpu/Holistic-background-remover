@@ -56,12 +56,15 @@ final class MatteEngine {
   let height: Int
   private let handle: OpaquePointer
 
-  init(width: Int, height: Int, temporal: Float, edgeSoftness: Float) throws {
+  init(width: Int, height: Int, temporal: Float, edgeSoftness: Float,
+       edgeSmoothing: Float = 0.8, cleanEdges: Bool = true) throws {
     self.width = width
     self.height = height
     var cfg = hbr_config()
     hbr_default_config(&cfg, Int32(width), Int32(height))
     cfg.temporal_strength = temporal
+    cfg.edge_smoothing = edgeSmoothing
+    cfg.decontaminate = cleanEdges ? 1 : 0
     // softness 0 -> crisp (0.3..0.7 remapped), 1 -> soft (0..1)
     let low = 0.3 * (1 - min(max(edgeSoftness, 0), 1))
     cfg.matte_low = low

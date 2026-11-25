@@ -35,7 +35,9 @@ final class FramePreviewer {
     segmenters[highQuality] = seg
     let mask = try seg.mask(for: frame)
     let softness = (settings["edgeSoftness"] as? NSNumber)?.floatValue ?? 0.5
-    let engine = try MatteEngine(width: w, height: h, temporal: 0, edgeSoftness: softness)
+    let engine = try MatteEngine(width: w, height: h, temporal: 0, edgeSoftness: softness,
+                                  edgeSmoothing: (settings["edgeSmoothing"] as? NSNumber)?.floatValue ?? 0.8,
+                                  cleanEdges: (settings["cleanEdges"] as? Bool) ?? true)
     CVPixelBufferLockBaseAddress(mask, .readOnly)
     defer { CVPixelBufferUnlockBaseAddress(mask, .readOnly) }
     try engine.refine(

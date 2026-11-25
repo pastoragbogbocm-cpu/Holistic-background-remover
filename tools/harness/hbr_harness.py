@@ -28,7 +28,8 @@ class HbrConfig(C.Structure):
     _fields_ = [("width", C.c_int), ("height", C.c_int),
                 ("temporal_strength", C.c_float), ("edge_radius", C.c_float),
                 ("edge_eps", C.c_float), ("matte_low", C.c_float),
-                ("matte_high", C.c_float), ("threads", C.c_int)]
+                ("matte_high", C.c_float), ("threads", C.c_int),
+                ("decontaminate", C.c_int), ("edge_smoothing", C.c_float)]
 
 
 class HbrYuv(C.Structure):
@@ -71,6 +72,8 @@ def main():
     ap.add_argument("--landscape-model")
     ap.add_argument("--bg", default="color:#00b140")
     ap.add_argument("--temporal", type=float, default=0.6)
+    ap.add_argument("--edge-smoothing", type=float, default=None)
+    ap.add_argument("--no-decontaminate", action="store_true")
     ap.add_argument("--matte", help="also write the alpha matte as a video")
     args = ap.parse_args()
 
@@ -121,6 +124,10 @@ def main():
     cfg = HbrConfig()
     lib.hbr_default_config(C.byref(cfg), W, H)
     cfg.temporal_strength = args.temporal
+    if args.edge_smoothing is not None:
+        cfg.edge_smoothing = args.edge_smoothing
+    if args.no_decontaminate:
+        cfg.decontaminate = 0
     eng = C.c_void_p(lib.hbr_create(C.byref(cfg)))
 
     frame_bytes = W * H * 3 // 2
@@ -187,7 +194,7 @@ def main():
         matte_enc = subprocess.Popen(
             ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt",
              "gray", "-s", f"{W}x{H}", "-framerate", src["fps"], "-i", "-",
-             "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
+             "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p",
              args.matte], stdin=subprocess.PIPE)
 
     t = dict(seg=0.0, refine=0.0, comp=0.0)

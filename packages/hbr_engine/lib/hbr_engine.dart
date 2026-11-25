@@ -108,6 +108,8 @@ class MatteSettings {
   const MatteSettings({
     this.temporalStrength = 0.6,
     this.edgeSoftness = 0.5,
+    this.edgeSmoothing = 0.8,
+    this.cleanEdgeColors = true,
     this.highQualitySegmentation = true,
   });
 
@@ -117,6 +119,14 @@ class MatteSettings {
   /// 0 = crisp cut-out, 1 = soft feathered edges.
   final double edgeSoftness;
 
+  /// 0 = raw outline, 1 = smoothest: rounds off stair-steps and steadies
+  /// the outline over time where the picture is still.
+  final double edgeSmoothing;
+
+  /// Removes the old background's colour from hair and other
+  /// semi-transparent edge pixels (no dark/green fringe).
+  final bool cleanEdgeColors;
+
   /// Uses the slower, more accurate segmentation mode where the platform
   /// offers one (Vision `.accurate` on iOS).
   final bool highQualitySegmentation;
@@ -124,17 +134,23 @@ class MatteSettings {
   Map<String, Object?> toMap() => {
         'temporalStrength': temporalStrength,
         'edgeSoftness': edgeSoftness,
+        'edgeSmoothing': edgeSmoothing,
+        'cleanEdges': cleanEdgeColors,
         'highQuality': highQualitySegmentation,
       };
 
   MatteSettings copyWith({
     double? temporalStrength,
     double? edgeSoftness,
+    double? edgeSmoothing,
+    bool? cleanEdgeColors,
     bool? highQualitySegmentation,
   }) =>
       MatteSettings(
         temporalStrength: temporalStrength ?? this.temporalStrength,
         edgeSoftness: edgeSoftness ?? this.edgeSoftness,
+        edgeSmoothing: edgeSmoothing ?? this.edgeSmoothing,
+        cleanEdgeColors: cleanEdgeColors ?? this.cleanEdgeColors,
         highQualitySegmentation:
             highQualitySegmentation ?? this.highQualitySegmentation,
       );

@@ -47,6 +47,11 @@ typedef struct {
   float matte_low;         /* alpha remap: values <= low become 0. 0.12     */
   float matte_high;        /* alpha remap: values >= high become 1. 0.88    */
   int threads;             /* 0 = auto                                      */
+  int decontaminate;       /* 1 = remove the old background's colour from
+                              semi-transparent edge pixels (hair, motion
+                              blur) so no fringe/halo shows. Default 1     */
+  float edge_smoothing;    /* 0..1: removes stair-steps and shimmer from
+                              the matte outline. Default 0.8               */
 } hbr_config;
 
 /* Planar or semi-planar 4:2:0 image. For NV12 set u = base of UV plane,

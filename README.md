@@ -52,7 +52,7 @@ python3 tools/harness/hbr_harness.py in.mp4 out.mp4 --lib build/core/libhbr_core
 
 | Part | Status |
 | --- | --- |
-| C++ core | Built and unit-tested (10 tests: lossless person pixels, exact background, edge snapping, flicker reduction without motion lag, rotation, colour, scaling, rotation helper, blur). |
+| C++ core | Built and unit-tested (11 tests: edge fringe removal, lossless person pixels, exact background, edge snapping, flicker reduction without motion lag, rotation, colour, scaling, rotation helper, blur). |
 | End-to-end pipeline | Validated on desktop with the same model and core: 1080p30 H.264, rotated portrait HEVC, 768x576 clip. Resolution, fps, rotation and audio preserved. |
 | Dart (plugin + app) | `flutter analyze` clean, widget/unit tests pass. |
 | Android Kotlin | Compiles against the Android 17 framework and Flutter embedding (MediaPipe API stubbed). Not yet run on a device. |

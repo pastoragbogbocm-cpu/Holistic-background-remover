@@ -264,7 +264,55 @@ static void test_rotate() {
   CHECK(back.y == f.y && back.uv == f.uv, "rot90 then rot270 is identity");
 }
 
+// Hair-like soft edge: pixels are a mix of the person (Y=200) and the
+// old background (Y=40). After replacing the background with Y=120, the
+// edge must not keep a dark fringe from the old background.
+static double fringe_error(int decontaminate) {
+  const int W = 640, H = 360, edge = 320, ramp = 24;
+  Frame f(W, H);
+  std::vector<float> truth(W);
+  for (int x = 0; x < W; ++x) {
+    float t = std::fmin(1.f, std::fmax(0.f, (edge + ramp / 2.f - x) / ramp));
+    truth[x] = t;
+    for (int y = 0; y < H; ++y) f.y[y * W + x] = static_cast<uint8_t>(40 + 160 * t + 0.5f);
+  }
+  std::fill(f.uv.begin(), f.uv.end(), 128);
+  const int mw = 64, mh = 36;
+  std::vector<float> mask(mw * mh);
+  for (int y = 0; y < mh; ++y)
+    for (int x = 0; x < mw; ++x) mask[y * mw + x] = (x + 0.5f) * W / mw < edge ? 1.f : 0.f;
+  hbr_config c;
+  hbr_default_config(&c, W, H);
+  c.temporal_strength = 0;
+  c.decontaminate = decontaminate;
+  hbr_engine* e = hbr_create(&c);
+  hbr_refine_f32(e, f.y.data(), W, mask.data(), mw, mh, mw, 0);
+  Frame out = f;
+  hbr_yuv s = f.view(), d = out.view();
+  hbr_composite_color(e, &s, &d, 120, 128, 128);
+  int st;
+  const uint8_t* a = hbr_alpha(e, &st);
+  double err = 0;
+  int n = 0;
+  for (int x = 0; x < W; ++x) {
+    int av = a[180 * st + x];
+    if (av <= 5 || av >= 250) continue;
+    double ideal = av / 255.0 * 200 + (1 - av / 255.0) * 120;
+    err += std::fabs(out.y[180 * W + x] - ideal);
+    ++n;
+  }
+  hbr_destroy(e);
+  return n ? err / n : 0;
+}
+
+static void test_decontamination() {
+  double off = fringe_error(0), on = fringe_error(1);
+  CHECK(off > 3, "test setup should show a fringe without decontamination: %.2f", off);
+  CHECK(on < off * 0.5, "decontamination should remove the fringe: on=%.2f off=%.2f", on, off);
+}
+
 int main() {
+  test_decontamination();
   test_rotate();
   test_full_person_is_lossless();
   test_no_person_is_background();

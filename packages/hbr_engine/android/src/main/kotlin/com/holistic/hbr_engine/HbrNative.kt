@@ -17,7 +17,9 @@ object HbrNative {
     const val MATRIX_BT709 = 1
     const val MATRIX_BT2020 = 2
 
-    @JvmStatic external fun nativeCreate(w: Int, h: Int, temporal: Float, low: Float, high: Float): Long
+    @JvmStatic external fun nativeCreate(
+        w: Int, h: Int, temporal: Float, low: Float, high: Float, smoothing: Float, clean: Boolean,
+    ): Long
     @JvmStatic external fun nativeDestroy(handle: Long)
     @JvmStatic external fun nativeReset(handle: Long)
     @JvmStatic external fun nativeRefine(
@@ -86,13 +88,15 @@ class MatteEngine(
     val height: Int,
     temporal: Float,
     edgeSoftness: Float,
+    edgeSmoothing: Float = 0.8f,
+    cleanEdges: Boolean = true,
 ) : AutoCloseable {
     private var handle: Long
 
     init {
         // edgeSoftness 0 -> crisp (0.3..0.7 remapped to 0..1), 1 -> soft.
         val low = 0.3f * (1f - edgeSoftness.coerceIn(0f, 1f))
-        handle = HbrNative.nativeCreate(width, height, temporal, low, 1f - low)
+        handle = HbrNative.nativeCreate(width, height, temporal, low, 1f - low, edgeSmoothing, cleanEdges)
         require(handle != 0L) { "Could not create matte engine for ${width}x$height" }
     }
 

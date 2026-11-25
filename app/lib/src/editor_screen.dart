@@ -243,6 +243,23 @@ class _EditorScreenState extends State<EditorScreen> {
                   right: 'Soft',
                 ),
                 _labeledSlider(
+                  'Edge smoothing',
+                  _settings.edgeSmoothing,
+                  (v) => _settings = _settings.copyWith(edgeSmoothing: v),
+                  left: 'Raw',
+                  right: 'Smoothest',
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Clean edge colours'),
+                  subtitle: const Text('Removes the old background tint from hair and edges'),
+                  value: _settings.cleanEdgeColors,
+                  onChanged: (v) {
+                    setState(() => _settings = _settings.copyWith(cleanEdgeColors: v));
+                    _schedulePreview(immediate: true);
+                  },
+                ),
+                _labeledSlider(
                   'Stability (reduces flicker)',
                   _settings.temporalStrength,
                   (v) => _settings = _settings.copyWith(temporalStrength: v),

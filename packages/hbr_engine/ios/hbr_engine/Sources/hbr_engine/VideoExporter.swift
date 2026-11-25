@@ -121,7 +121,9 @@ final class VideoExporter {
     let temporal = (settings["temporalStrength"] as? NSNumber)?.floatValue ?? 0.6
     let softness = (settings["edgeSoftness"] as? NSNumber)?.floatValue ?? 0.5
     let highQuality = (settings["highQuality"] as? Bool) ?? true
-    let engine = try MatteEngine(width: W, height: H, temporal: temporal, edgeSoftness: softness)
+    let engine = try MatteEngine(width: W, height: H, temporal: temporal, edgeSoftness: softness,
+                                  edgeSmoothing: (settings["edgeSmoothing"] as? NSNumber)?.floatValue ?? 0.8,
+                                  cleanEdges: (settings["cleanEdges"] as? Bool) ?? true)
     let bg = try BackgroundProvider(spec: background, width: W, height: H, rotation: meta.rotation,
                                     matrix: meta.matrix, fullRange: false)
     let segmenter = PersonSegmenter(highQuality: highQuality)

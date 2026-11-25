@@ -48,10 +48,12 @@ class Exporter(
         val h = decoder.height
         val temporal = (settings["temporalStrength"] as? Number)?.toFloat() ?: 0.6f
         val softness = (settings["edgeSoftness"] as? Number)?.toFloat() ?: 0.5f
+        val smoothing = (settings["edgeSmoothing"] as? Number)?.toFloat() ?: 0.8f
+        val clean = settings["cleanEdges"] as? Boolean ?: true
         var encoder: MediaCodec? = null
         val outFile = File(outputPath)
         try {
-            MatteEngine(w, h, temporal, softness).use { engine ->
+            MatteEngine(w, h, temporal, softness, smoothing, clean).use { engine ->
                 BackgroundSource.create(background, w, h, meta.rotation, meta.matrix, meta.fullRange).use { bg ->
                     Segmenter(context, meta.displayWidth > meta.displayHeight, video = true).use { seg ->
                         encoder = createEncoder(meta, w, h)

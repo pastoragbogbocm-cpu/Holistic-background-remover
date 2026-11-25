@@ -237,9 +237,23 @@ struct hbr_engine {
   std::vector<float> guide, prev_guide, mask, prev_mask;
   std::vector<float> mI, mP, mIP, mII, a, b, tmp, scratch;
   bool has_prev = false;
+  bool has_prev_coeffs = false;
   float mask_px = 1.f;  // working-res pixels per mask pixel
+  std::vector<float> motion;          // per-pixel temporal update weight
+  std::vector<float> prev_a, prev_b;  // previous guided-filter coefficients
 
-  std::vector<uint8_t> alpha;  // W*H
+  std::vector<uint8_t> alpha;       // W*H
+  std::vector<uint8_t> prev_alpha;  // W*H, for full-res temporal smoothing
+  std::vector<uint8_t> luma_dn;     // W*H, lightly denoised guide
+  bool has_prev_alpha = false;
+
+  // edge colour decontamination: local pure-foreground / pure-background
+  // colour estimates at a reduced resolution
+  int ew = 0, eh = 0;
+  std::vector<float> fgp[3], bgp[3];
+  Taps ex_l, ey_l, ex_c, ey_c;  // est -> full luma / chroma sampling
+  std::vector<uint8_t> mixfrac;    // per-pixel estimated mixing fraction
+  std::vector<uint8_t> alpha_eff;  // alpha after colour-based correction
 
   // blur background scratch
   std::vector<uint8_t> blur_y, blur_u, blur_v;
@@ -256,6 +270,8 @@ void hbr_default_config(hbr_config* c, int width, int height) {
   c->matte_low = 0.12f;
   c->matte_high = 0.88f;
   c->threads = 0;
+  c->decontaminate = 1;
+  c->edge_smoothing = 0.8f;
 }
 
 hbr_engine* hbr_create(const hbr_config* cfg) {
@@ -281,7 +297,8 @@ hbr_engine* hbr_create(const hbr_config* cfg) {
 
   size_t n = static_cast<size_t>(e->gw) * e->gh;
   for (auto* v : {&e->guide, &e->prev_guide, &e->mask, &e->prev_mask, &e->mI,
-                  &e->mP, &e->mIP, &e->mII, &e->a, &e->b, &e->scratch})
+                  &e->mP, &e->mIP, &e->mII, &e->a, &e->b, &e->scratch,
+                  &e->motion, &e->prev_a, &e->prev_b})
     v->assign(n, 0.f);
   e->alpha.assign(static_cast<size_t>(e->W) * e->H, 0);
   return e;
@@ -290,7 +307,7 @@ hbr_engine* hbr_create(const hbr_config* cfg) {
 void hbr_destroy(hbr_engine* e) { delete e; }
 
 void hbr_reset(hbr_engine* e) {
-  if (e) e->has_prev = false;
+  if (e) e->has_prev = e->has_prev_coeffs = e->has_prev_alpha = false;
 }
 
 const uint8_t* hbr_alpha(const hbr_engine* e, int* stride) {
@@ -352,7 +369,21 @@ int refine_common(hbr_engine* e, const uint8_t* y, int y_stride) {
     double diff = 0;
     for (size_t i = 0; i < n; ++i)
       diff += std::fabs(e->guide[i] - e->prev_guide[i]);
-    if (diff / n > 0.16) e->has_prev = false;
+    if (diff / n > 0.16)
+      e->has_prev = e->has_prev_coeffs = e->has_prev_alpha = false;
+  }
+
+  // 2b. Remove the model's stair-steps: the mask comes from a ~256 px grid,
+  // and bilinear upsampling leaves blocky diagonals. A small Gaussian-like
+  // blur (two box passes) at about half a mask pixel makes the outline
+  // round before the guided filter snaps it to the real edges.
+  float es = clampf(e->cfg.edge_smoothing, 0.f, 1.f);
+  {
+    int sr = static_cast<int>(std::lround(e->mask_px * (0.25f + 0.5f * es)));
+    if (sr > 0) {
+      box_mean(e->mask.data(), e->scratch.data(), e->gw, e->gh, sr, e->tmp);
+      box_mean(e->scratch.data(), e->mask.data(), e->gw, e->gh, sr, e->tmp);
+    }
   }
 
   // 3. motion-adaptive temporal smoothing. Small frame-to-frame changes in
@@ -364,9 +395,14 @@ int refine_common(hbr_engine* e, const uint8_t* y, int y_stride) {
     for (size_t i = 0; i < n; ++i) {
       float cur = e->mask[i], prev = e->prev_mask[i];
       float d = std::fabs(cur - prev);
+      // the image itself changing (motion) also counts, not only the mask
+      float dg = std::fabs(e->guide[i] - e->prev_guide[i]) * 2.5f;
       float w = base + (1.f - base) * smoothstep(0.08f, 0.35f, d);
       e->mask[i] = prev + w * (cur - prev);
+      e->motion[i] = base + (1.f - base) * smoothstep(0.06f, 0.3f, std::max(d, dg));
     }
+  } else {
+    std::fill(e->motion.begin(), e->motion.end(), 1.f);
   }
   std::memcpy(e->prev_mask.data(), e->mask.data(), n * sizeof(float));
   std::memcpy(e->prev_guide.data(), e->guide.data(), n * sizeof(float));
@@ -398,8 +434,53 @@ int refine_common(hbr_engine* e, const uint8_t* y, int y_stride) {
   }
   box_mean(e->a.data(), e->mI.data(), e->gw, e->gh, r, e->tmp);  // mean a
   box_mean(e->b.data(), e->mP.data(), e->gw, e->gh, r, e->tmp);  // mean b
+  // 4b. Steady outline: luma noise makes the guided-filter coefficients
+  // shimmer from frame to frame even when nothing moves. Average them over
+  // time where the picture is static; let them follow instantly where it
+  // moves (same motion weights as the mask).
+  if (e->has_prev_coeffs && es > 0.f) {
+    for (size_t i = 0; i < n; ++i) {
+      float w = 1.f - es * (1.f - e->motion[i]);
+      e->mI[i] = e->prev_a[i] + w * (e->mI[i] - e->prev_a[i]);
+      e->mP[i] = e->prev_b[i] + w * (e->mP[i] - e->prev_b[i]);
+    }
+  }
+  std::memcpy(e->prev_a.data(), e->mI.data(), n * sizeof(float));
+  std::memcpy(e->prev_b.data(), e->mP.data(), n * sizeof(float));
+  e->has_prev_coeffs = true;
   const float* MA = e->mI.data();
   const float* MB = e->mP.data();
+
+  // 4c. Sensor noise in the full-res luma would otherwise go straight into
+  // the matte (q = a*I + b) and make edges sparkle. Blend in a 3x3 mean of
+  // the luma; real edges are wider than a pixel, so they stay put.
+  const int Wf = e->W, Hf = e->H;
+  const uint8_t* guide_full = y;
+  int guide_stride = y_stride;
+  if (es > 0.f) {
+    e->luma_dn.resize(static_cast<size_t>(Wf) * Hf);
+    const int wgt = static_cast<int>(es * 256.f);
+    parallel_for(Hf, e->threads, [&](int yb, int ye) {
+      for (int yy = yb; yy < ye; ++yy) {
+        const uint8_t* r0 = y + static_cast<size_t>(std::max(0, yy - 1)) * y_stride;
+        const uint8_t* r1 = y + static_cast<size_t>(yy) * y_stride;
+        const uint8_t* r2 = y + static_cast<size_t>(std::min(Hf - 1, yy + 1)) * y_stride;
+        uint8_t* o = e->luma_dn.data() + static_cast<size_t>(yy) * Wf;
+        for (int x = 0; x < Wf; ++x) {
+          int xl = std::max(0, x - 1), xr = std::min(Wf - 1, x + 1);
+          int sum = r0[xl] + r0[x] + r0[xr] + r1[xl] + r1[x] + r1[xr] + r2[xl] +
+                    r2[x] + r2[xr];
+          int mean = (sum * 455) >> 12;  // /9
+          int v = r1[x];
+          o[x] = static_cast<uint8_t>(v + (((mean - v) * wgt) >> 8));
+        }
+      }
+    });
+    guide_full = e->luma_dn.data();
+    guide_stride = Wf;
+  }
+  const bool temporal_full = e->has_prev_alpha && es > 0.f;
+  if (e->prev_alpha.size() != e->alpha.size()) e->prev_alpha.assign(e->alpha.size(), 0);
 
   // 5. apply q = a*I + b at FULL resolution, then tighten the matte
   float lo = e->cfg.matte_low, hi = e->cfg.matte_high;
@@ -422,8 +503,10 @@ int refine_common(hbr_engine* e, const uint8_t* y, int y_stride) {
         ra[x] = av;
         rb[x] = bv * 255.f;  // b is in mask units; scale to I in 0..255
       }
-      const uint8_t* iy = y + static_cast<size_t>(yy) * y_stride;
+      const uint8_t* iy = guide_full + static_cast<size_t>(yy) * guide_stride;
       uint8_t* out = e->alpha.data() + static_cast<size_t>(yy) * W;
+      uint8_t* pa = e->prev_alpha.data() + static_cast<size_t>(yy) * W;
+      const float* mrow = e->motion.data() + static_cast<size_t>(y0) * gw;
       for (int x = 0; x < W; ++x) {
         const float* wx = e->up_x.w.data() + e->up_x.offset[x];
         int x0 = e->up_x.start[x];
@@ -433,11 +516,113 @@ int refine_common(hbr_engine* e, const uint8_t* y, int y_stride) {
           bv += rb[x0 + 1] * wx[1];
         }
         float q = av * iy[x] + bv;  // 0..255 range
-        out[x] = to_u8((q - lo255) * sc);
+        // smooth (C1) roll-off instead of a hard clamp: no visible kink
+        // where the soft edge meets fully opaque / fully clear pixels
+        float t = clampf((q - lo255) * sc * (1.f / 255.f), 0.f, 1.f);
+        float av255 = t * t * (3.f - 2.f * t) * 255.f;
+        if (temporal_full) {
+          // steady edges where the picture is static, instant where it moves
+          float w = 1.f - es * (1.f - mrow[x0]);
+          av255 = pa[x] + w * (av255 - pa[x]);
+        }
+        out[x] = static_cast<uint8_t>(av255 + 0.5f);
+        pa[x] = out[x];
       }
     }
   });
+  e->has_prev_alpha = true;
   return HBR_OK;
+}
+
+// Builds local colour estimates used to "un-mix" semi-transparent edge
+// pixels. For each pixel near the outline we need (a) the colour of the
+// person nearby and (b) the colour of the ORIGINAL background nearby.
+// Both come from normalised convolution weighted by solid foreground /
+// solid background pixels only, at ~360 px on the short side.
+void build_decon(hbr_engine* e, const hbr_yuv* src) {
+  const int W = e->W, H = e->H, CW = (W + 1) / 2, CH = (H + 1) / 2;
+  if (e->ew == 0) {
+    double ds = std::max(1.0, std::min(W, H) / 360.0);
+    e->ew = std::max(2, static_cast<int>(std::lround(W / ds)));
+    e->eh = std::max(2, static_cast<int>(std::lround(H / ds)));
+    e->ex_l = make_taps(0, e->ew, e->ew, W);
+    e->ey_l = make_taps(0, e->eh, e->eh, H);
+    e->ex_c = make_taps(0, e->ew, e->ew, CW);
+    e->ey_c = make_taps(0, e->eh, e->eh, CH);
+  }
+  const int ew = e->ew, eh = e->eh, th = e->threads;
+  const size_t n = static_cast<size_t>(ew) * eh;
+  Taps lx = make_taps(0, W, W, ew), ly = make_taps(0, H, H, eh);
+  Taps cx = make_taps(0, CW, CW, ew), cy = make_taps(0, CH, CH, eh);
+  std::vector<float> pl[3], al(n), wf(n), wb(n), t1(n), t2(n), tmp;
+  for (auto& p : pl) p.resize(n);
+  resample_to_float(src->y, src->y_stride, 1, lx, ly, 1.f, pl[0].data(), ew, eh, th);
+  resample_to_float(src->u, src->uv_stride, src->uv_pixel_stride, cx, cy, 1.f,
+                    pl[1].data(), ew, eh, th);
+  resample_to_float(src->v, src->uv_stride, src->uv_pixel_stride, cx, cy, 1.f,
+                    pl[2].data(), ew, eh, th);
+  resample_to_float(e->alpha.data(), W, 1, lx, ly, 1.f / 255.f, al.data(), ew,
+                    eh, th);
+  for (size_t i = 0; i < n; ++i) {
+    wf[i] = smoothstep(0.985f, 1.f, al[i]);
+    wb[i] = smoothstep(0.985f, 1.f, 1.f - al[i]);
+  }
+  int r = std::max(1, static_cast<int>(std::lround(std::min(ew, eh) * 0.02)));
+  auto blur2 = [&](std::vector<float>& v) {
+    box_mean(v.data(), t1.data(), ew, eh, r, tmp);
+    box_mean(t1.data(), v.data(), ew, eh, r, tmp);
+  };
+  std::vector<float> df = wf, db = wb;
+  blur2(df);
+  blur2(db);
+  const float fb = 1e-3f;
+  for (int c = 0; c < 3; ++c) {
+    std::vector<float> plain = pl[c];
+    blur2(plain);
+    e->fgp[c].resize(n);
+    e->bgp[c].resize(n);
+    for (size_t i = 0; i < n; ++i) e->fgp[c][i] = pl[c][i] * wf[i];
+    for (size_t i = 0; i < n; ++i) e->bgp[c][i] = pl[c][i] * wb[i];
+    blur2(e->fgp[c]);
+    blur2(e->bgp[c]);
+    for (size_t i = 0; i < n; ++i) {
+      e->fgp[c][i] = (e->fgp[c][i] + fb * plain[i]) / (df[i] + fb);
+      e->bgp[c][i] = (e->bgp[c][i] + fb * plain[i]) / (db[i] + fb);
+    }
+  }
+}
+
+inline float sample_est(const std::vector<float>& p, int ew, const Taps& tx,
+                        const Taps& ty, int x, int y) {
+  int x0 = tx.start[x], y0 = ty.start[y];
+  float wx = tx.count[x] > 1 ? tx.w[tx.offset[x] + 1] : 0.f;
+  float wy = ty.count[y] > 1 ? ty.w[ty.offset[y] + 1] : 0.f;
+  int x1 = x0 + (tx.count[x] > 1 ? 1 : 0), y1 = y0 + (ty.count[y] > 1 ? 1 : 0);
+  const float* r0 = p.data() + static_cast<size_t>(y0) * ew;
+  const float* r1 = p.data() + static_cast<size_t>(y1) * ew;
+  float top = r0[x0] + (r0[x1] - r0[x0]) * wx;
+  float bot = r1[x0] + (r1[x1] - r1[x0]) * wx;
+  return top + (bot - top) * wy;
+}
+
+// Recovers the pure foreground colour of a semi-transparent edge pixel.
+// Model: I = t*F + (1-t)*B_old, with F and B_old the nearby person and
+// original-background colours. The mixing fraction t is estimated from the
+// luma (the matte alpha is deliberately tightened, so it under-reports
+// mixing) and reused for chroma, so all three channels are corrected
+// consistently and no false colours appear. The old background's share is
+// swapped for the person colour while keeping the pixel's own detail.
+inline float mix_fraction(int I, float a, float fg, float bg_old) {
+  float d = fg - bg_old;
+  if (std::fabs(d) < 12.f) return a;  // luma can't tell them apart
+  return clampf((I - bg_old) / d, 0.f, 1.f);
+}
+
+inline int unmix(int I, float a, float t, float fg, float bg_old) {
+  float F = I + (1.f - t) * (fg - bg_old);
+  F = clampf(F, std::min<float>(I, fg), std::max<float>(I, fg));
+  float w = 1.f - smoothstep(0.97f, 1.f, a);
+  return static_cast<int>(clampf(I + w * (F - I), 0.f, 255.f) + 0.5f);
 }
 
 // Blend helper: (s*a + b*(255-a)) / 255 with rounding.
@@ -452,20 +637,54 @@ int composite(hbr_engine* e, const hbr_yuv* src, hbr_yuv* dst, BgY bgy,
   if (!src || !dst || !src->y || !dst->y) return HBR_ERR_ARG;
   const int W = e->W, H = e->H;
   const uint8_t* A = e->alpha.data();
+  const bool dc = e->cfg.decontaminate != 0;
+  if (dc) build_decon(e, src);  // reads src before any in-place write
+  if (dc) e->mixfrac.resize(static_cast<size_t>(W) * H);
+  uint8_t* T = dc ? e->mixfrac.data() : nullptr;
+  if (dc) e->alpha_eff.resize(static_cast<size_t>(W) * H);
+  uint8_t* AE = dc ? e->alpha_eff.data() : nullptr;
+  const int ew = e->ew;
   parallel_for(H, e->threads, [&](int b, int en) {
     for (int y = b; y < en; ++y) {
       const uint8_t* s = src->y + static_cast<size_t>(y) * src->y_stride;
       uint8_t* d = dst->y + static_cast<size_t>(y) * dst->y_stride;
       const uint8_t* a = A + static_cast<size_t>(y) * W;
-      for (int x = 0; x < W; ++x) d[x] = blend(s[x], bgy(x, y), a[x]);
+      for (int x = 0; x < W; ++x) {
+        int av = a[x];
+        int sv = s[x];
+        if (dc && av > 0 && av < 255) {
+          float af = av / 255.f;
+          float fg = sample_est(e->fgp[0], ew, e->ex_l, e->ey_l, x, y);
+          float bo = sample_est(e->bgp[0], ew, e->ex_l, e->ey_l, x, y);
+          float t = mix_fraction(sv, af, fg, bo);
+          // Where the colours clearly say "this is the old background" but
+          // the model was unsure, trust the colours: lower the opacity so
+          // no ghost or colour smear of either layer remains.
+          if (std::fabs(fg - bo) >= 24.f) {
+            float lim = t + 0.2f;
+            if (af > lim) {
+              af = lim;
+              av = static_cast<int>(af * 255.f + 0.5f);
+            }
+          }
+          T[static_cast<size_t>(y) * W + x] = static_cast<uint8_t>(t * 255.f + 0.5f);
+          AE[static_cast<size_t>(y) * W + x] = static_cast<uint8_t>(av);
+          sv = unmix(sv, af, t, fg, bo);
+        } else if (dc) {
+          T[static_cast<size_t>(y) * W + x] = static_cast<uint8_t>(av);
+          AE[static_cast<size_t>(y) * W + x] = static_cast<uint8_t>(av);
+        }
+        d[x] = blend(sv, bgy(x, y), av);
+      }
     }
   });
   const int CW = (W + 1) / 2, CH = (H + 1) / 2;
   parallel_for(CH, e->threads, [&](int b, int en) {
     for (int cy = b; cy < en; ++cy) {
       int y0 = 2 * cy, y1 = std::min(H - 1, y0 + 1);
-      const uint8_t* a0 = A + static_cast<size_t>(y0) * W;
-      const uint8_t* a1 = A + static_cast<size_t>(y1) * W;
+      const uint8_t* AC = dc ? AE : A;
+      const uint8_t* a0 = AC + static_cast<size_t>(y0) * W;
+      const uint8_t* a1 = AC + static_cast<size_t>(y1) * W;
       const size_t so = static_cast<size_t>(cy) * src->uv_stride;
       const size_t dof = static_cast<size_t>(cy) * dst->uv_stride;
       const int sp = src->uv_pixel_stride, dp = dst->uv_pixel_stride;
@@ -474,8 +693,18 @@ int composite(hbr_engine* e, const hbr_yuv* src, hbr_yuv* dst, BgY bgy,
         int ac = (a0[x0] + a0[x1] + a1[x0] + a1[x1] + 2) >> 2;
         uint8_t bu, bv;
         bguv(cx, cy, &bu, &bv);
-        uint8_t su = src->u[so + static_cast<size_t>(cx) * sp];
-        uint8_t sv = src->v[so + static_cast<size_t>(cx) * sp];
+        int su = src->u[so + static_cast<size_t>(cx) * sp];
+        int sv = src->v[so + static_cast<size_t>(cx) * sp];
+        if (dc && ac > 0 && ac < 255) {
+          float af = ac / 255.f;
+          const uint8_t* t0 = T + static_cast<size_t>(y0) * W;
+          const uint8_t* t1 = T + static_cast<size_t>(y1) * W;
+          float t = (t0[x0] + t0[x1] + t1[x0] + t1[x1]) / (4.f * 255.f);
+          su = unmix(su, af, t, sample_est(e->fgp[1], ew, e->ex_c, e->ey_c, cx, cy),
+                     sample_est(e->bgp[1], ew, e->ex_c, e->ey_c, cx, cy));
+          sv = unmix(sv, af, t, sample_est(e->fgp[2], ew, e->ex_c, e->ey_c, cx, cy),
+                     sample_est(e->bgp[2], ew, e->ex_c, e->ey_c, cx, cy));
+        }
         dst->u[dof + static_cast<size_t>(cx) * dp] = blend(su, bu, ac);
         dst->v[dof + static_cast<size_t>(cx) * dp] = blend(sv, bv, ac);
       }

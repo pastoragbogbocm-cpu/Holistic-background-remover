@@ -27,8 +27,10 @@ class Previewer(private val context: Context) : AutoCloseable {
         val seg = segmenter ?: Segmenter(context, landscape = w > h, video = false).also { segmenter = it }
         val mask = seg.segmentUpright(bmp)
         val softness = (settings["edgeSoftness"] as? Number)?.toFloat() ?: 0.5f
+        val smoothing = (settings["edgeSmoothing"] as? Number)?.toFloat() ?: 0.8f
+        val clean = settings["cleanEdges"] as? Boolean ?: true
         val out = I420Frame(w, h)
-        MatteEngine(w, h, 0f, softness).use { engine ->
+        MatteEngine(w, h, 0f, softness, smoothing, clean).use { engine ->
             engine.refine(src, mask.buffer, mask.width, mask.height, 0)
             BackgroundSource.create(background, w, h, 0, matrix, true, previewTimeMs = timeMs).use { bg ->
                 engine.compositeInto(src, out, bg.next())

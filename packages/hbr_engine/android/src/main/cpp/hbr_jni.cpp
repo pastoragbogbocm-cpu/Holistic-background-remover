@@ -33,10 +33,13 @@ hbr_engine* eng(jlong h) { return reinterpret_cast<hbr_engine*>(h); }
 extern "C" {
 
 JNI_FN(jlong, nativeCreate)(JNIEnv*, jclass, jint w, jint h, jfloat temporal,
-                           jfloat low, jfloat high) {
+                           jfloat low, jfloat high, jfloat smoothing,
+                           jboolean clean) {
   hbr_config c;
   hbr_default_config(&c, w, h);
   c.temporal_strength = temporal;
+  c.edge_smoothing = smoothing;
+  c.decontaminate = clean ? 1 : 0;
   c.matte_low = low;
   c.matte_high = high;
   return reinterpret_cast<jlong>(hbr_create(&c));
