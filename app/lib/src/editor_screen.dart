@@ -365,7 +365,7 @@ class _EditorScreenState extends State<EditorScreen> {
       Text('Frame size', style: theme.textTheme.titleMedium),
       const SizedBox(height: 10),
       SizedBox(
-        height: 74,
+        height: 78,
         child: ListView(scrollDirection: Axis.horizontal, children: [
           for (final shape in FrameShape.values)
             Padding(
@@ -695,10 +695,14 @@ class _EditorScreenState extends State<EditorScreen> {
           : const Center(child: CircularProgressIndicator());
     } else if (_preview != null) {
       child = Image.memory(_preview!, fit: BoxFit.contain, gaplessPlayback: true);
+      // Keep the picture in its own final variable: the builder runs later,
+      // and reading `child` there would find this LayoutBuilder itself and
+      // nest it inside itself without end (that froze the app).
+      final picture = child;
       child = LayoutBuilder(
         builder: (context, c) => GestureDetector(
           onPanUpdate: (d) => _movable && !_dragSpeaker ? _dragBackground(d, c.biggest) : _moveSpeaker(d, c.biggest),
-          child: child,
+          child: picture,
         ),
       );
     } else if (_previewError != null) {
@@ -855,7 +859,7 @@ class _ShapeChip extends StatelessWidget {
         onTap: onTap,
         child: Container(
           width: 66,
-          padding: const EdgeInsets.symmetric(vertical: 8),
+          padding: const EdgeInsets.symmetric(vertical: 6),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
             border: Border.all(color: selected ? scheme.primary : Colors.transparent, width: 1.5),
@@ -876,7 +880,13 @@ class _ShapeChip extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 4),
-            Text(shape.label, style: TextStyle(fontSize: 12, color: fg, fontWeight: FontWeight.w600)),
+            // scales down instead of overflowing with large system text
+            Flexible(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(shape.label, maxLines: 1, style: TextStyle(fontSize: 12, color: fg, fontWeight: FontWeight.w600)),
+              ),
+            ),
           ]),
         ),
       ),

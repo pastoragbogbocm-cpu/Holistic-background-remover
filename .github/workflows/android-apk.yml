@@ -38,7 +38,7 @@ jobs:
         run: |
           flutter pub get
           flutter analyze
-          flutter test
+          timeout 600 flutter test  # an endless layout must fail, not hang
 
       - name: Build APK
         working-directory: app
