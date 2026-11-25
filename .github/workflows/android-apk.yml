@@ -80,7 +80,7 @@ jobs:
           target: google_apis
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: adb logcat -c; (cd app/android && ./gradlew --no-watch-fs :app:connectedReleaseAndroidTest --stacktrace); rc=$?; adb logcat -d > logcat.txt; exit $rc
+          script: adb root || true; adb wait-for-device; adb logcat -c; (cd app/android && ./gradlew --no-watch-fs :app:connectedReleaseAndroidTest --stacktrace); rc=$?; adb logcat -d > logcat.txt; adb shell 'cat /data/anr/* 2>/dev/null' > traces.txt || true; exit $rc
 
       - name: No "isn't responding" during the device tests
         run: |
@@ -90,6 +90,13 @@ jobs:
         if: always()
         run: grep -E "HbrEngine|HbrTest|AndroidRuntime|whisper|MediaMuxer|MPEG4Writer" logcat.txt | tail -200 || true
 
+      - name: Thread dump taken when the screen was stuck
+        if: always()
+        run: |
+          [ -s traces.txt ] || { echo "no thread dump"; exit 0; }
+          awk '/^"main"/{p=1} p{print} /^$/{if(p)exit}' traces.txt | head -80
+          grep -n "libapp.so\|libflutter.so\|libhbr" traces.txt | head -40 || true
+
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
@@ -98,6 +105,7 @@ jobs:
           path: |
             app/build/app/reports/androidTests/
             logcat.txt
+            traces.txt
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v4

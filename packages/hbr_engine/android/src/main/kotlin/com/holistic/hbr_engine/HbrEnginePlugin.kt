@@ -16,7 +16,11 @@ class HbrEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventCha
     private lateinit var channel: MethodChannel
     private lateinit var events: EventChannel
     private lateinit var context: Context
-    private val main = Handler(Looper.getMainLooper())
+    // Asynchronous messages, like Flutter's own platform queue: results are
+    // delivered even while the window holds a layout barrier on the main queue.
+    private val main: Handler =
+        if (android.os.Build.VERSION.SDK_INT >= 28) Handler.createAsync(Looper.getMainLooper())
+        else Handler(Looper.getMainLooper())
     private val exportExecutor = Executors.newSingleThreadExecutor()
     // Preview work runs at background priority so the screen always stays responsive.
     private val previewExecutor = Executors.newSingleThreadExecutor { r ->

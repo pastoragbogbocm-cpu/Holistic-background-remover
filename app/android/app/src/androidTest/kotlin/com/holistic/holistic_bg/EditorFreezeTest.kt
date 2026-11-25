@@ -47,6 +47,7 @@ class EditorFreezeTest {
         val main = Handler(Looper.getMainLooper())
         val worst = AtomicLong()
         val running = AtomicBoolean(true)
+        var dumped = false
         val probe = Thread {
             while (running.get()) {
                 val sent = System.nanoTime()
@@ -60,6 +61,8 @@ class EditorFreezeTest {
                     val sb = StringBuilder()
                     Looper.getMainLooper().dump({ line -> sb.append(line).append('\n') }, "  ")
                     android.util.Log.w("HbrTest", "main queue:\n" + sb.toString().take(6000))
+                    // full thread dump with native frames (written to /data/anr by the system)
+                    if (!dumped) { dumped = true; android.os.Process.sendSignal(android.os.Process.myPid(), android.os.Process.SIGNAL_QUIT) }
                     done.await(60, TimeUnit.SECONDS)
                 }
                 worst.set(maxOf(worst.get(), (System.nanoTime() - sent) / 1_000_000))
