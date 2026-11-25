@@ -77,7 +77,7 @@ jobs:
           target: google_apis
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: adb logcat -c; (cd app/android && ./gradlew :app:connectedReleaseAndroidTest --stacktrace); rc=$?; adb logcat -d > logcat.txt; exit $rc
+          script: adb logcat -c; (cd app/android && ./gradlew --no-watch-fs :app:connectedReleaseAndroidTest --stacktrace); rc=$?; adb logcat -d > logcat.txt; exit $rc
 
       - name: Upload test report
         if: always()
