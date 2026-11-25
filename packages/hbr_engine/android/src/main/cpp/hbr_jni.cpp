@@ -186,6 +186,61 @@ JNI_FN(jint, nativeScaleI420Fill)(JNIEnv* env, jclass, jobject src, jint sw,
   return hbr_scale_yuv_fill(&sv, sw, sh, &dv, dw, dh);
 }
 
+// ---- layout helpers ----
+
+JNI_FN(void, nativePlaceRect)(JNIEnv* env, jclass, jint iw, jint ih, jint cw,
+                             jint ch, jboolean fit, jfloat scale, jfloat px,
+                             jfloat py, jintArray out) {
+  int r[4];
+  hbr_place_rect(iw, ih, cw, ch, fit ? 1 : 0, scale, px, py, &r[0], &r[1],
+                 &r[2], &r[3]);
+  jint o[4] = {r[0], r[1], r[2], r[3]};
+  env->SetIntArrayRegion(out, 0, 4, o);
+}
+
+// src: tight I420. dst given as planes (can be a MediaCodec input Image).
+JNI_FN(jint, nativeBlit)(JNIEnv* env, jclass, jobject src, jint sw, jint sh,
+                        jobject dy, jint dyStride, jobject du, jobject dv,
+                        jint duvStride, jint duvPix, jint dw, jint dh, jint rx,
+                        jint ry, jint rw, jint rh) {
+  uint8_t* s = addr(env, src);
+  if (!s) return HBR_ERR_ARG;
+  hbr_yuv sv = i420(s, sw, sh);
+  hbr_yuv dvw{addr(env, dy), dyStride, addr(env, du), addr(env, dv), duvStride,
+              duvPix};
+  if (!dvw.y || !dvw.u || !dvw.v) return HBR_ERR_ARG;
+  return hbr_blit_yuv(&sv, sw, sh, &dvw, dw, dh, rx, ry, rw, rh);
+}
+
+JNI_FN(jint, nativeCrop)(JNIEnv* env, jclass, jobject src, jint sw, jint sh,
+                        jint rx, jint ry, jint rw, jint rh, jobject dst,
+                        jint dw, jint dh) {
+  uint8_t* s = addr(env, src);
+  uint8_t* d = addr(env, dst);
+  if (!s || !d) return HBR_ERR_ARG;
+  hbr_yuv sv = i420(s, sw, sh);
+  hbr_yuv dv = i420(d, dw, dh);
+  return hbr_crop_yuv(&sv, sw, sh, rx, ry, rw, rh, &dv, dw, dh);
+}
+
+// yuv = 0x00YYUUVV
+JNI_FN(jint, nativeFill)(JNIEnv* env, jclass, jobject dst, jint w, jint h,
+                        jint yuv) {
+  uint8_t* d = addr(env, dst);
+  if (!d) return HBR_ERR_ARG;
+  hbr_yuv dv = i420(d, w, h);
+  return hbr_fill_yuv(&dv, w, h, (yuv >> 16) & 0xff, (yuv >> 8) & 0xff,
+                      yuv & 0xff);
+}
+
+JNI_FN(jint, nativeBlur)(JNIEnv* env, jclass, jobject img, jint w, jint h,
+                        jfloat amount) {
+  uint8_t* d = addr(env, img);
+  if (!d) return HBR_ERR_ARG;
+  hbr_yuv dv = i420(d, w, h);
+  return hbr_blur_yuv(&dv, w, h, amount);
+}
+
 // Returns 0x00YYUUVV.
 JNI_FN(jint, nativeRgbToYuv)(JNIEnv*, jclass, jint r, jint g, jint b,
                             jint matrix, jboolean full) {

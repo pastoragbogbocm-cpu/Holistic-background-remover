@@ -16,12 +16,14 @@ class ExportSheet extends StatefulWidget {
     required this.info,
     required this.background,
     required this.settings,
+    this.frame = const OutputFrame(),
   });
 
   final String inputPath;
   final VideoInfo info;
   final Background background;
   final MatteSettings settings;
+  final OutputFrame frame;
 
   @override
   State<ExportSheet> createState() => _ExportSheetState();
@@ -58,6 +60,7 @@ class _ExportSheetState extends State<ExportSheet> {
       outputPath: out,
       background: widget.background,
       settings: widget.settings,
+      frame: widget.frame,
     ).listen((p) async {
       if (!mounted) return;
       if (p.error != null) {

@@ -57,6 +57,55 @@ class PersonExportTest {
         checkExport("person_rot90.mp4", mapOf("type" to "image", "path" to f.path))
     }
 
+    @Test(timeout = 240_000)
+    fun squareFrameWholeVideo() = checkLayout(
+        "person.mp4", mapOf("type" to "color", "argb" to GREEN), mapOf("aspect" to "1:1", "fit" to true),
+        expectW = 720, expectH = 720,
+    )
+
+    @Test(timeout = 240_000)
+    fun landscapeFrameFromPhoneVideoWithZoomedImage() {
+        val bg = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888).apply { eraseColor(GREEN) }
+        val f = File(app.cacheDir, "bg2.png")
+        f.outputStream().use { bg.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        checkLayout(
+            "person_rot90.mp4",
+            mapOf("type" to "image", "path" to f.path, "scale" to 0.6, "panX" to -1.0, "fill" to GREEN),
+            mapOf("aspect" to "16:9", "fit" to true),
+            expectW = 1280, expectH = 720,
+        )
+    }
+
+    /** Output has the requested display size and still shows the person. */
+    private fun checkLayout(clip: String, background: Map<String, Any>, settings: Map<String, Any>, expectW: Int, expectH: Int) {
+        val input = asset(clip)
+        val output = File(app.cacheDir, "layout_$clip")
+        output.delete()
+        Exporter(app, input.path, output.path, background, settings, { _, _, _ -> }, { false }).run()
+        val r = MediaMetadataRetriever()
+        try {
+            r.setDataSource(output.path)
+            val w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)!!.toInt()
+            val h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)!!.toInt()
+            val rot = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toInt() ?: 0
+            val dw = if (rot % 180 == 0) w else h
+            val dh = if (rot % 180 == 0) h else w
+            assertTrue("display size ${dw}x$dh, expected ${expectW}x$expectH", dw == expectW && dh == expectH)
+            val frame = r.getFrameAtTime(1_000_000, MediaMetadataRetriever.OPTION_CLOSEST)!!
+            var green = 0
+            var total = 0
+            for (y in 0 until frame.height step 4) for (x in 0 until frame.width step 4) {
+                total++
+                if (isGreen(frame.getPixel(x, y))) green++
+            }
+            val g = green.toFloat() / total
+            assertTrue("person missing: ${pct(g)} of the frame is background", g < 0.9f)
+            assertTrue("background missing: only ${pct(g)} is background", g > 0.2f)
+        } finally {
+            r.release()
+        }
+    }
+
     private fun checkExport(clip: String, background: Map<String, Any>) {
         val input = asset(clip)
         val output = File(app.cacheDir, "out_$clip")

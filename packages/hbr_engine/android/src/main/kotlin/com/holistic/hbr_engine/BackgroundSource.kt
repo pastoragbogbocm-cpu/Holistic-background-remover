@@ -42,7 +42,10 @@ sealed class BackgroundSource : AutoCloseable {
     }
 
     /** A still image, aspect-filled and rotated into storage orientation once. */
-    class Still(bitmap: Bitmap, w: Int, h: Int, rotation: Int, matrix: Int, full: Boolean) : BackgroundSource() {
+    class Still(
+        bitmap: Bitmap, w: Int, h: Int, rotation: Int, matrix: Int, full: Boolean,
+        transform: BgTransform = BgTransform(),
+    ) : BackgroundSource() {
         private val frame: BackgroundFrame
 
         init {
@@ -51,7 +54,16 @@ sealed class BackgroundSource : AutoCloseable {
             val upright = I420Frame(dispW, dispH)
             val argb = if (bitmap.config == Bitmap.Config.ARGB_8888) bitmap else bitmap.copy(Bitmap.Config.ARGB_8888, false)
             val rgba = bitmapToRgba(argb)
-            HbrNative.nativeRgbaToI420Fill(rgba, argb.width, argb.height, argb.rowBytes, upright.buffer, dispW, dispH, matrix, full)
+            if (transform.identity) {
+                HbrNative.nativeRgbaToI420Fill(rgba, argb.width, argb.height, argb.rowBytes, upright.buffer, dispW, dispH, matrix, full)
+            } else {
+                // picture at its own size (even), then placed with zoom/position
+                val iw = maxOf(2, argb.width and 1.inv())
+                val ih = maxOf(2, argb.height and 1.inv())
+                val img = I420Frame(iw, ih)
+                HbrNative.nativeRgbaToI420Fill(rgba, argb.width, argb.height, argb.rowBytes, img.buffer, iw, ih, matrix, full)
+                placeInto(img, upright, transform, matrix, full)
+            }
             val stored = if (rotation == 0) upright else I420Frame(w, h).also {
                 // upright -> stored is the inverse of the display rotation
                 HbrNative.nativeRotateI420(upright.buffer, dispW, dispH, it.buffer, (360 - rotation) % 360)
@@ -63,8 +75,17 @@ sealed class BackgroundSource : AutoCloseable {
     }
 
     /** A looping video, decoded in step with the main video. */
-    class Video(path: String, private val w: Int, private val h: Int, private val rotation: Int) : BackgroundSource() {
+    class Video(
+        path: String, private val w: Int, private val h: Int, private val rotation: Int,
+        private val transform: BgTransform = BgTransform(), private val matrix: Int = HbrNative.MATRIX_BT709,
+        private val full: Boolean = false,
+    ) : BackgroundSource() {
         private val decoder = FrameDecoder(path, loop = true)
+        private val bgTurn = decoder.meta.rotation
+        private var bgUpright: I420Frame? = null
+        private val canvasUpright by lazy {
+            if (rotation % 180 == 0) I420Frame(w, h) else I420Frame(h, w)
+        }
         private val out = I420Frame(w, h)
         private val frame = BackgroundFrame(HbrNative.MODE_IMAGE, image = out)
         private val turn = ((decoder.meta.rotation - rotation) % 360 + 360) % 360
@@ -77,11 +98,25 @@ sealed class BackgroundSource : AutoCloseable {
         override fun next(): BackgroundFrame {
             if (!decoder.next()) return frame // empty/broken file: keep last frame
             var src = decoder.frame
-            if (rotated != null) {
+            if (rotated != null && transform.identity) {
                 HbrNative.nativeRotateI420(src.buffer, src.width, src.height, rotated.buffer, turn)
                 src = rotated
             }
-            HbrNative.nativeScaleI420Fill(src.buffer, src.width, src.height, out.buffer, w, h)
+            if (transform.identity) {
+                HbrNative.nativeScaleI420Fill(src.buffer, src.width, src.height, out.buffer, w, h)
+            } else {
+                // place upright on the display canvas, then into stored orientation
+                val upSrc = if (bgTurn == 0) src else (bgUpright ?: I420Frame(
+                    if (bgTurn % 180 == 0) decoder.width else decoder.height,
+                    if (bgTurn % 180 == 0) decoder.height else decoder.width,
+                ).also { bgUpright = it }).also {
+                    HbrNative.nativeRotateI420(decoder.frame.buffer, decoder.width, decoder.height, it.buffer, bgTurn)
+                }
+                val disp = canvasUpright
+                placeInto(upSrc, disp, transform, matrix, full)
+                if (rotation == 0) HbrNative.blit(disp, out, Rect4(0, 0, w, h))
+                else HbrNative.nativeRotateI420(disp.buffer, disp.width, disp.height, out.buffer, (360 - rotation) % 360)
+            }
             return frame
         }
 
@@ -101,16 +136,31 @@ sealed class BackgroundSource : AutoCloseable {
             "color" -> Solid((spec["argb"] as Number).toInt(), matrix, full)
             "blur" -> Blur((spec["amount"] as? Number)?.toFloat() ?: 0.03f)
             "image" -> {
-                val bmp = loadBitmap(spec["path"] as String, maxOf(w, h))
-                Still(bmp, w, h, rotation, matrix, full).also { bmp.recycle() }
+                val t = BgTransform.from(spec)
+                // zooming in needs more source pixels
+                val bmp = loadBitmap(spec["path"] as String, (maxOf(w, h) * maxOf(1f, t.scale)).toInt())
+                Still(bmp, w, h, rotation, matrix, full, t).also { bmp.recycle() }
             }
             "video" -> {
                 val path = spec["path"] as String
+                val t = BgTransform.from(spec)
                 if (previewTimeMs != null) {
-                    Still(videoFrame(path, previewTimeMs), w, h, rotation, matrix, full)
-                } else Video(path, w, h, rotation)
+                    Still(videoFrame(path, previewTimeMs), w, h, rotation, matrix, full, t)
+                } else Video(path, w, h, rotation, t, matrix, full)
             }
             else -> throw IllegalArgumentException("Unknown background ${spec["type"]}")
+        }
+
+        /** Draws [img] onto [canvas] with the user's zoom/position; the fill colour shows around it. */
+        fun placeInto(img: I420Frame, canvas: I420Frame, t: BgTransform, matrix: Int, full: Boolean) {
+            val r = HbrNative.placeRect(img.width, img.height, canvas.width, canvas.height, false, t.scale, t.panX, t.panY)
+            val covers = r.x <= 0 && r.y <= 0 && r.x + r.w >= canvas.width && r.y + r.h >= canvas.height
+            if (!covers) {
+                val c = t.fillArgb
+                HbrNative.nativeFill(canvas.buffer, canvas.width, canvas.height,
+                    HbrNative.nativeRgbToYuv((c shr 16) and 0xff, (c shr 8) and 0xff, c and 0xff, matrix, full))
+            }
+            HbrNative.blit(img, canvas, r)
         }
 
         /** Decodes an image upright (EXIF applied), roughly at [target] px. */

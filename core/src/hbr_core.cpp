@@ -947,6 +947,145 @@ int hbr_scale_yuv_fill(const hbr_yuv* src, int sw, int sh, hbr_yuv* dst,
   return HBR_OK;
 }
 
+void hbr_place_rect(int img_w, int img_h, int canvas_w, int canvas_h, int fit,
+                    float scale, float pan_x, float pan_y, int* rx, int* ry,
+                    int* rw, int* rh) {
+  double sx = static_cast<double>(canvas_w) / std::max(1, img_w);
+  double sy = static_cast<double>(canvas_h) / std::max(1, img_h);
+  double s = (fit ? std::min(sx, sy) : std::max(sx, sy)) *
+             clampf(scale, 0.05f, 20.f);
+  int w = std::max(2, static_cast<int>(std::lround(img_w * s / 2.0)) * 2);
+  int h = std::max(2, static_cast<int>(std::lround(img_h * s / 2.0)) * 2);
+  // pan across the free range (works for both larger and smaller images)
+  double fx = (canvas_w - w) / 2.0, fy = (canvas_h - h) / 2.0;
+  // pan -1 aligns the left/top edges, +1 the right/bottom edges
+  double x = fx * (1.0 + clampf(pan_x, -1.f, 1.f));
+  double y = fy * (1.0 + clampf(pan_y, -1.f, 1.f));
+  *rx = static_cast<int>(std::lround(x / 2.0)) * 2;
+  *ry = static_cast<int>(std::lround(y / 2.0)) * 2;
+  *rw = w;
+  *rh = h;
+}
+
+namespace {
+// One plane: src (sw x sh, pixel step sp) -> dst rect, clipped.
+void blit_plane(const uint8_t* s, int ss, int sp, int sw, int sh, uint8_t* d,
+                int ds, int dp, int dw, int dh, double rx, double ry, double rw,
+                double rh, int th) {
+  int x0 = std::max(0, static_cast<int>(std::ceil(rx - 1e-9)));
+  int y0 = std::max(0, static_cast<int>(std::ceil(ry - 1e-9)));
+  int x1 = std::min(dw, static_cast<int>(std::floor(rx + rw + 1e-9)));
+  int y1 = std::min(dh, static_cast<int>(std::floor(ry + rh + 1e-9)));
+  if (x1 <= x0 || y1 <= y0) return;
+  const double fx = sw / rw, fy = sh / rh;
+  Taps tx = make_taps((x0 - rx) * fx, (x1 - x0) * fx, sw, x1 - x0);
+  Taps ty = make_taps((y0 - ry) * fy, (y1 - y0) * fy, sh, y1 - y0);
+  int ow = x1 - x0, oh = y1 - y0;
+  std::vector<float> f(static_cast<size_t>(ow) * oh);
+  resample_to_float(s, ss, sp, tx, ty, 1.f, f.data(), ow, oh, th);
+  for (int y = 0; y < oh; ++y) {
+    uint8_t* o = d + static_cast<size_t>(y0 + y) * ds + static_cast<size_t>(x0) * dp;
+    const float* fr = f.data() + static_cast<size_t>(y) * ow;
+    for (int x = 0; x < ow; ++x) o[static_cast<size_t>(x) * dp] = to_u8(fr[x]);
+  }
+}
+
+int hw_threads() {
+  return static_cast<int>(std::max(1u, std::min(6u, std::thread::hardware_concurrency())));
+}
+}  // namespace
+
+int hbr_blit_yuv(const hbr_yuv* src, int sw, int sh, hbr_yuv* dst, int dw,
+                 int dh, int rx, int ry, int rw, int rh) {
+  if (!src || !dst || sw < 2 || sh < 2 || dw < 2 || dh < 2 || rw < 2 || rh < 2)
+    return HBR_ERR_ARG;
+  int th = hw_threads();
+  blit_plane(src->y, src->y_stride, 1, sw, sh, dst->y, dst->y_stride, 1, dw, dh,
+             rx, ry, rw, rh, th);
+  int scw = (sw + 1) / 2, sch = (sh + 1) / 2, dcw = (dw + 1) / 2, dch = (dh + 1) / 2;
+  blit_plane(src->u, src->uv_stride, src->uv_pixel_stride, scw, sch, dst->u,
+             dst->uv_stride, dst->uv_pixel_stride, dcw, dch, rx / 2.0, ry / 2.0,
+             rw / 2.0, rh / 2.0, th);
+  blit_plane(src->v, src->uv_stride, src->uv_pixel_stride, scw, sch, dst->v,
+             dst->uv_stride, dst->uv_pixel_stride, dcw, dch, rx / 2.0, ry / 2.0,
+             rw / 2.0, rh / 2.0, th);
+  return HBR_OK;
+}
+
+int hbr_crop_yuv(const hbr_yuv* src, int sw, int sh, int rx, int ry, int rw,
+                 int rh, hbr_yuv* dst, int dw, int dh) {
+  if (!src || !dst || sw < 2 || sh < 2 || dw < 2 || dh < 2 || rw < 2 || rh < 2)
+    return HBR_ERR_ARG;
+  int th = hw_threads();
+  auto plane = [&](const uint8_t* s, int ss, int sp, int pw, int ph, uint8_t* d,
+                   int ds, int dp, int ow, int oh, double x, double y, double w,
+                   double h) {
+    Taps tx = make_taps(x, w, pw, ow), ty = make_taps(y, h, ph, oh);
+    std::vector<float> f(static_cast<size_t>(ow) * oh);
+    resample_to_float(s, ss, sp, tx, ty, 1.f, f.data(), ow, oh, th);
+    for (int yy = 0; yy < oh; ++yy) {
+      uint8_t* o = d + static_cast<size_t>(yy) * ds;
+      const float* fr = f.data() + static_cast<size_t>(yy) * ow;
+      for (int xx = 0; xx < ow; ++xx) o[static_cast<size_t>(xx) * dp] = to_u8(fr[xx]);
+    }
+  };
+  plane(src->y, src->y_stride, 1, sw, sh, dst->y, dst->y_stride, 1, dw, dh, rx,
+        ry, rw, rh);
+  int scw = (sw + 1) / 2, sch = (sh + 1) / 2, dcw = (dw + 1) / 2, dch = (dh + 1) / 2;
+  plane(src->u, src->uv_stride, src->uv_pixel_stride, scw, sch, dst->u,
+        dst->uv_stride, dst->uv_pixel_stride, dcw, dch, rx / 2.0, ry / 2.0,
+        rw / 2.0, rh / 2.0);
+  plane(src->v, src->uv_stride, src->uv_pixel_stride, scw, sch, dst->v,
+        dst->uv_stride, dst->uv_pixel_stride, dcw, dch, rx / 2.0, ry / 2.0,
+        rw / 2.0, rh / 2.0);
+  return HBR_OK;
+}
+
+int hbr_fill_yuv(hbr_yuv* dst, int w, int h, uint8_t y, uint8_t u, uint8_t v) {
+  if (!dst || w < 1 || h < 1) return HBR_ERR_ARG;
+  for (int r = 0; r < h; ++r)
+    std::memset(dst->y + static_cast<size_t>(r) * dst->y_stride, y, w);
+  int cw = (w + 1) / 2, ch = (h + 1) / 2;
+  for (int r = 0; r < ch; ++r)
+    for (int c = 0; c < cw; ++c) {
+      size_t o = static_cast<size_t>(r) * dst->uv_stride +
+                 static_cast<size_t>(c) * dst->uv_pixel_stride;
+      dst->u[o] = u;
+      dst->v[o] = v;
+    }
+  return HBR_OK;
+}
+
+int hbr_blur_yuv(hbr_yuv* img, int w, int h, float amount) {
+  if (!img || w < 2 || h < 2) return HBR_ERR_ARG;
+  int th = hw_threads();
+  double ds = std::max(1.0, std::min(w, h) / 270.0);
+  int bw = std::max(2, static_cast<int>(std::lround(w / ds)));
+  int bh = std::max(2, static_cast<int>(std::lround(h / ds)));
+  int r = std::max(1, static_cast<int>(std::lround(
+                          clampf(amount, 0.f, 0.2f) * std::min(bw, bh) / 1.7)));
+  std::vector<float> p(static_cast<size_t>(bw) * bh), t1(p.size()), tmp;
+  auto one = [&](uint8_t* base, int stride, int pix, int pw, int ph) {
+    Taps dx = make_taps(0, pw, pw, bw), dy = make_taps(0, ph, ph, bh);
+    resample_to_float(base, stride, pix, dx, dy, 1.f, p.data(), bw, bh, th);
+    box_mean(p.data(), t1.data(), bw, bh, r, tmp);
+    box_mean(t1.data(), p.data(), bw, bh, r, tmp);
+    box_mean(p.data(), t1.data(), bw, bh, r, tmp);
+    Taps ux = make_taps(0, bw, bw, pw), uy = make_taps(0, bh, bh, ph);
+    std::vector<float> f(static_cast<size_t>(pw) * ph);
+    resample_to_float(t1.data(), bw, 1, ux, uy, 1.f, f.data(), pw, ph, th);
+    for (int y = 0; y < ph; ++y)
+      for (int x = 0; x < pw; ++x)
+        base[static_cast<size_t>(y) * stride + static_cast<size_t>(x) * pix] =
+            to_u8(f[static_cast<size_t>(y) * pw + x]);
+  };
+  one(img->y, img->y_stride, 1, w, h);
+  int cw = (w + 1) / 2, ch = (h + 1) / 2;
+  one(img->u, img->uv_stride, img->uv_pixel_stride, cw, ch);
+  one(img->v, img->uv_stride, img->uv_pixel_stride, cw, ch);
+  return HBR_OK;
+}
+
 namespace {
 // dst(x', y') <- src(x, y) for a clockwise rotation, on one plane.
 void rotate_plane(const uint8_t* s, int ss, int sp, int sw, int sh, uint8_t* d,

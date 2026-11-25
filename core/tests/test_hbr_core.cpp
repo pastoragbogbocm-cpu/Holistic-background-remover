@@ -356,9 +356,47 @@ static void test_motion_sharpen() {
   CHECK(still == edge_band(false, 0.f), "still edges must not change (%d)", still);
 }
 
+static void test_layout() {
+  int x, y, w, h;
+  // 16:9 video on a square canvas
+  hbr_place_rect(1920, 1080, 1080, 1080, 0, 1.f, 0.f, 0.f, &x, &y, &w, &h);
+  CHECK(w == 1920 && h == 1080 && x == -420 && y == 0, "cover %d %d %d %d", x, y, w, h);
+  hbr_place_rect(1920, 1080, 1080, 1080, 1, 1.f, 0.f, 0.f, &x, &y, &w, &h);
+  CHECK(w == 1080 && h == 608 && x == 0 && y == 236, "fit %d %d %d %d", x, y, w, h);
+  hbr_place_rect(1920, 1080, 1080, 1080, 0, 1.f, -1.f, 0.f, &x, &y, &w, &h);
+  CHECK(x == 0, "pan left %d", x);
+  hbr_place_rect(1920, 1080, 1080, 1080, 0, 1.f, 1.f, 0.f, &x, &y, &w, &h);
+  CHECK(x == 1080 - 1920, "pan right %d", x);
+  hbr_place_rect(100, 100, 200, 200, 0, 0.5f, 1.f, 1.f, &x, &y, &w, &h);
+  CHECK(w == 100 && x == 100 && y == 100, "smaller, bottom-right %d %d %d", x, y, w);
+  hbr_place_rect(1080, 1920, 1080, 1920, 0, 1.f, 0.f, 0.f, &x, &y, &w, &h);
+  CHECK(x == 0 && y == 0 && w == 1080 && h == 1920, "identity %d %d %d %d", x, y, w, h);
+
+  // exact copy for a same-size blit, colour fill around a smaller one
+  Frame a(64, 48), b(64, 48);
+  fill_noise(a, 5);
+  hbr_yuv av = a.view(), bv = b.view();
+  hbr_blit_yuv(&av, 64, 48, &bv, 64, 48, 0, 0, 64, 48);
+  CHECK(a.y == b.y && a.uv == b.uv, "same-size blit not exact");
+  hbr_fill_yuv(&bv, 64, 48, 10, 20, 30);
+  hbr_blit_yuv(&av, 64, 48, &bv, 64, 48, 16, 12, 32, 24);
+  CHECK(b.y[0] == 10 && b.y[47 * 64 + 63] == 10, "outside rect must keep fill");
+  CHECK(b.y[24 * 64 + 32] != 10 || a.y[24 * 64 + 32] == 10, "inside rect must be drawn");
+  // crop is the inverse of blit
+  Frame c(64, 48);
+  hbr_yuv cv = c.view();
+  hbr_crop_yuv(&av, 64, 48, 0, 0, 64, 48, &cv, 64, 48);
+  CHECK(a.y == c.y, "identity crop not exact");
+  // blur keeps flat images flat
+  hbr_fill_yuv(&bv, 64, 48, 100, 120, 140);
+  hbr_blur_yuv(&bv, 64, 48, 0.05f);
+  CHECK(b.y[10 * 64 + 10] == 100 && b.uv[10] == 120, "blur changed a flat image");
+}
+
 int main() {
   test_decontamination();
   test_motion_sharpen();
+  test_layout();
   test_rotate();
   test_full_person_is_lossless();
   test_no_person_is_background();

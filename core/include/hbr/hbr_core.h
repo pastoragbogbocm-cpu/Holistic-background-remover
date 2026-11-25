@@ -124,6 +124,35 @@ int hbr_scale_yuv_fill(const hbr_yuv* src, int sw, int sh, hbr_yuv* dst,
 int hbr_rotate_yuv(const hbr_yuv* src, int sw, int sh, hbr_yuv* dst,
                    int rot_cw);
 
+/* ---- layout: frame sizes, fit/fill, background zoom and position ---- */
+
+/* Where an image of img_w x img_h lands on a canvas_w x canvas_h canvas.
+ * fit = 0 covers the canvas (crops), fit = 1 shows the whole image.
+ * scale multiplies that size (1 = exactly cover/fit; < 1 smaller, > 1 zoom
+ * in). pan_x / pan_y in -1..1 move it across the free range: -1 = left/top
+ * edge, 0 = centred, 1 = right/bottom edge. The rectangle may extend past
+ * the canvas. Results are even, so 4:2:0 chroma stays aligned. */
+void hbr_place_rect(int img_w, int img_h, int canvas_w, int canvas_h, int fit,
+                    float scale, float pan_x, float pan_y, int* rx, int* ry,
+                    int* rw, int* rh);
+
+/* Resamples the whole of src (sw x sh) into the rectangle (rx, ry, rw, rh)
+ * of dst (dw x dh), clipped to dst. Area-averaging when shrinking, bilinear
+ * when enlarging; an exact copy when the rectangle is the same size. */
+int hbr_blit_yuv(const hbr_yuv* src, int sw, int sh, hbr_yuv* dst, int dw,
+                 int dh, int rx, int ry, int rw, int rh);
+
+/* The inverse: fills all of dst (dw x dh) from the rectangle (rx, ry, rw,
+ * rh) of src (sw x sh). Parts of the rectangle outside src repeat its edge. */
+int hbr_crop_yuv(const hbr_yuv* src, int sw, int sh, int rx, int ry, int rw,
+                 int rh, hbr_yuv* dst, int dw, int dh);
+
+/* Fills a 4:2:0 image with one colour. */
+int hbr_fill_yuv(hbr_yuv* dst, int w, int h, uint8_t y, uint8_t u, uint8_t v);
+
+/* Heavy blur in place (amount = radius as a fraction of the short side). */
+int hbr_blur_yuv(hbr_yuv* img, int w, int h, float amount);
+
 /* 4:2:0 -> RGBA (for previews/thumbnails). */
 int hbr_yuv_to_rgba(const hbr_yuv* src, int w, int h, uint8_t* rgba,
                     int stride, hbr_matrix m, int full_range);

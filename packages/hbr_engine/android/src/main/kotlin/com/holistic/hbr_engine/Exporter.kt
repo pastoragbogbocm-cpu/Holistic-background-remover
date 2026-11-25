@@ -61,10 +61,14 @@ class Exporter(
         var encoder: MediaCodec? = null
         val outFile = File(outputPath)
         try {
+            val layout = Layout.from(settings, w, h, meta.rotation)
+            val cw = layout.canvasW
+            val ch = layout.canvasH
             MatteEngine(w, h, temporal, softness, smoothing, clean).use { engine ->
-                BackgroundSource.create(background, w, h, meta.rotation, meta.matrix, meta.fullRange).use { bg ->
+                val compositor = Compositor(engine, layout, meta.matrix, meta.fullRange)
+                BackgroundSource.create(background, cw, ch, meta.rotation, meta.matrix, meta.fullRange).use { bg ->
                     Segmenter(context, meta.displayWidth > meta.displayHeight, video = true).use { seg ->
-                        encoder = createEncoder(meta, w, h)
+                        encoder = createEncoder(meta, cw, ch)
                         val enc = encoder!!
                         enc.start()
                         val mux = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
@@ -96,11 +100,11 @@ class Exporter(
                             val inIdx = dequeueInput(enc)
                             val img = enc.getInputImage(inIdx) ?: error("Encoder has no image input")
                             val p = img.planes
-                            engine.composite(
-                                decoder.frame, p[0].buffer, p[0].rowStride, p[1].buffer, p[2].buffer,
-                                p[1].rowStride, p[1].pixelStride, bgFrame,
+                            compositor.compose(
+                                decoder.frame, bgFrame, p[0].buffer, p[0].rowStride, p[1].buffer, p[2].buffer,
+                                p[1].rowStride, p[1].pixelStride,
                             )
-                            enc.queueInputBuffer(inIdx, 0, HbrNative.i420Size(w, h), pts, 0)
+                            enc.queueInputBuffer(inIdx, 0, HbrNative.i420Size(cw, ch), pts, 0)
                             drain(enc, false)
 
                             frames++

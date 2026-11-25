@@ -29,17 +29,20 @@ class Previewer(private val context: Context) : AutoCloseable {
         val softness = (settings["edgeSoftness"] as? Number)?.toFloat() ?: 0.5f
         val smoothing = (settings["edgeSmoothing"] as? Number)?.toFloat() ?: 0.8f
         val clean = settings["cleanEdges"] as? Boolean ?: true
-        val out = I420Frame(w, h)
+        val layout = Layout.from(settings, w, h, 0)
+        val cw = layout.canvasW
+        val ch = layout.canvasH
+        val out = I420Frame(cw, ch)
         MatteEngine(w, h, 0f, softness, smoothing, clean).use { engine ->
             engine.refine(src, mask.buffer, mask.width, mask.height, 0)
-            BackgroundSource.create(background, w, h, 0, matrix, true, previewTimeMs = timeMs).use { bg ->
-                engine.compositeInto(src, out, bg.next())
+            BackgroundSource.create(background, cw, ch, 0, matrix, true, previewTimeMs = timeMs).use { bg ->
+                Compositor(engine, layout, matrix, true).composeInto(src, out, bg.next())
             }
         }
-        val outRgba = java.nio.ByteBuffer.allocateDirect(w * h * 4)
-        HbrNative.nativeI420ToRgba(out.buffer, w, h, outRgba, matrix, true)
+        val outRgba = java.nio.ByteBuffer.allocateDirect(cw * ch * 4)
+        HbrNative.nativeI420ToRgba(out.buffer, cw, ch, outRgba, matrix, true)
         outRgba.rewind()
-        val result = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val result = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888)
         result.copyPixelsFromBuffer(outRgba)
         val bytes = ByteArrayOutputStream()
         result.compress(Bitmap.CompressFormat.JPEG, 92, bytes)

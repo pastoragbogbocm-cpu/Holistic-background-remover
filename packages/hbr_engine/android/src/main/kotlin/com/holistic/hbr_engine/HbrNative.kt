@@ -55,6 +55,32 @@ object HbrNative {
         src: ByteBuffer, sw: Int, sh: Int, dst: ByteBuffer, dw: Int, dh: Int,
     ): Int
 
+    @JvmStatic external fun nativePlaceRect(
+        iw: Int, ih: Int, cw: Int, ch: Int, fit: Boolean, scale: Float, panX: Float, panY: Float, out: IntArray,
+    )
+    @JvmStatic external fun nativeBlit(
+        src: ByteBuffer, sw: Int, sh: Int,
+        dy: ByteBuffer, dyStride: Int, du: ByteBuffer, dv: ByteBuffer, duvStride: Int, duvPix: Int,
+        dw: Int, dh: Int, rx: Int, ry: Int, rw: Int, rh: Int,
+    ): Int
+    @JvmStatic external fun nativeCrop(
+        src: ByteBuffer, sw: Int, sh: Int, rx: Int, ry: Int, rw: Int, rh: Int, dst: ByteBuffer, dw: Int, dh: Int,
+    ): Int
+    @JvmStatic external fun nativeFill(dst: ByteBuffer, w: Int, h: Int, yuv: Int): Int
+    @JvmStatic external fun nativeBlur(img: ByteBuffer, w: Int, h: Int, amount: Float): Int
+
+    fun placeRect(iw: Int, ih: Int, cw: Int, ch: Int, fit: Boolean, scale: Float = 1f, panX: Float = 0f, panY: Float = 0f): Rect4 {
+        val o = IntArray(4)
+        nativePlaceRect(iw, ih, cw, ch, fit, scale, panX, panY, o)
+        return Rect4(o[0], o[1], o[2], o[3])
+    }
+
+    /** Draws tight I420 [src] into [rect] of tight I420 [dst]. */
+    fun blit(src: I420Frame, dst: I420Frame, rect: Rect4) {
+        check(nativeBlit(src.buffer, src.width, src.height, dst.y, dst.width, dst.u, dst.v, dst.chromaWidth, 1,
+            dst.width, dst.height, rect.x, rect.y, rect.w, rect.h) == 0) { "blit failed" }
+    }
+
     @JvmStatic external fun nativeRgbToYuv(r: Int, g: Int, b: Int, matrix: Int, full: Boolean): Int
 
     fun i420Size(w: Int, h: Int): Int = w * h + 2 * ((w + 1) / 2) * ((h + 1) / 2)
@@ -62,6 +88,9 @@ object HbrNative {
     fun allocI420(w: Int, h: Int): ByteBuffer =
         ByteBuffer.allocateDirect(i420Size(w, h)).order(ByteOrder.nativeOrder())
 }
+
+/** Integer rectangle (may extend past the canvas). */
+data class Rect4(val x: Int, val y: Int, val w: Int, val h: Int)
 
 /** A tight I420 frame in a direct buffer, with plane views for compositing into it. */
 class I420Frame(val width: Int, val height: Int) {

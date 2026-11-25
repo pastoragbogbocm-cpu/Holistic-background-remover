@@ -40,6 +40,8 @@ class _EditorScreenState extends State<EditorScreen> {
   String? _videoPath;
   double _blur = 0.03;
   MatteSettings _settings = const MatteSettings();
+  OutputFrame _frame = const OutputFrame();
+  BackgroundPlacement _placement = const BackgroundPlacement();
   bool _showOriginal = false;
   int _timeMs = 0;
 
@@ -70,11 +72,11 @@ class _EditorScreenState extends State<EditorScreen> {
   Background get _background => switch (_kind) {
         _BgKind.color => ColorBackground(_color),
         _BgKind.image => _imagePath != null
-            ? ImageBackground(_imagePath!)
+            ? ImageBackground(_imagePath!, placement: _placement)
             : ColorBackground(_color),
         _BgKind.blur => BlurBackground(_blur),
         _BgKind.video => _videoPath != null
-            ? VideoBackground(_videoPath!)
+            ? VideoBackground(_videoPath!, placement: _placement)
             : ColorBackground(_color),
       };
 
@@ -98,6 +100,7 @@ class _EditorScreenState extends State<EditorScreen> {
           timeMs: _timeMs,
           background: _background,
           settings: _settings,
+          frame: _frame,
         );
         if (!mounted) return;
         setState(() {
@@ -146,6 +149,7 @@ class _EditorScreenState extends State<EditorScreen> {
         info: widget.info,
         background: _background,
         settings: _settings,
+        frame: _frame,
       ),
     );
   }
@@ -199,10 +203,12 @@ class _EditorScreenState extends State<EditorScreen> {
               ),
             ]),
             Text(
-              'Export keeps ${info.summary}',
+              _exportSummary(info),
               style: theme.textTheme.bodySmall
                   ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
             ),
+            const SizedBox(height: 20),
+            _frameSection(theme),
             const SizedBox(height: 20),
             Text('Background', style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
@@ -285,8 +291,133 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
+  bool get _movable =>
+      (_kind == _BgKind.image && _imagePath != null) || (_kind == _BgKind.video && _videoPath != null);
+
+  String _exportSummary(VideoInfo info) {
+    if (_frame.shape == FrameShape.original) return 'Export keeps ${info.summary}';
+    final (w, h) = _frame.sizeFor(info.displayWidth, info.displayHeight);
+    final fps = info.frameRate.toStringAsFixed(info.frameRate % 1 == 0 ? 0 : 2);
+    return 'Export: ${w}x$h (${_frame.shape.label}, ${_frame.fit ? 'whole video' : 'filled'})'
+        ' · $fps fps · ${info.codec.toUpperCase()}${info.hasAudio ? ' · audio' : ''}';
+  }
+
+  Widget _frameSection(ThemeData theme) {
+    final scheme = theme.colorScheme;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Frame size', style: theme.textTheme.titleMedium),
+      const SizedBox(height: 10),
+      SizedBox(
+        height: 74,
+        child: ListView(scrollDirection: Axis.horizontal, children: [
+          for (final shape in FrameShape.values)
+            Padding(
+              padding: const EdgeInsets.only(right: 10),
+              child: _ShapeChip(
+                shape: shape,
+                sourceRatio: widget.info.aspectRatio,
+                selected: _frame.shape == shape,
+                onTap: () {
+                  setState(() => _frame = OutputFrame(shape: shape, fit: _frame.fit));
+                  _schedulePreview(immediate: true);
+                },
+              ),
+            ),
+        ]),
+      ),
+      if (_frame.shape != FrameShape.original) ...[
+        const SizedBox(height: 10),
+        SegmentedButton<bool>(
+          showSelectedIcon: false,
+          segments: const [
+            ButtonSegment(value: false, icon: Icon(Icons.crop), label: Text('Fill frame')),
+            ButtonSegment(value: true, icon: Icon(Icons.fit_screen_outlined), label: Text('Whole video')),
+          ],
+          selected: {_frame.fit},
+          onSelectionChanged: (s) {
+            setState(() => _frame = OutputFrame(shape: _frame.shape, fit: s.first));
+            _schedulePreview(immediate: true);
+          },
+        ),
+        const SizedBox(height: 4),
+        Text(
+          _frame.fit
+              ? 'The whole video is shown; your background fills the rest of the frame.'
+              : 'The video fills the frame; the edges outside it are trimmed.',
+          style: theme.textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+        ),
+      ],
+    ]);
+  }
+
+  Widget _placementControls(ThemeData theme) {
+    final small = theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const SizedBox(height: 12),
+      Row(children: [
+        const Icon(Icons.zoom_out_map, size: 20),
+        const SizedBox(width: 8),
+        const Text('Size'),
+        Expanded(
+          child: Slider(
+            value: _placement.scale.clamp(0.4, 3.0),
+            min: 0.4,
+            max: 3.0,
+            divisions: 52,
+            label: '${(_placement.scale * 100).round()}%',
+            onChanged: (v) => setState(() => _placement = _placement.copyWith(scale: v)),
+            onChangeEnd: (_) => _schedulePreview(immediate: true),
+          ),
+        ),
+        SizedBox(width: 48, child: Text('${(_placement.scale * 100).round()}%', textAlign: TextAlign.end)),
+      ]),
+      Row(children: [
+        Expanded(child: Text('Drag the preview to move the background.', style: small)),
+        TextButton.icon(
+          onPressed: _placement.isDefault
+              ? null
+              : () {
+                  setState(() => _placement = BackgroundPlacement(fillArgb: _placement.fillArgb));
+                  _schedulePreview(immediate: true);
+                },
+          icon: const Icon(Icons.center_focus_strong_outlined, size: 18),
+          label: const Text('Reset'),
+        ),
+      ]),
+      if (_placement.scale < 1.0) ...[
+        const SizedBox(height: 6),
+        Text('Colour around the background', style: small),
+        const SizedBox(height: 6),
+        Wrap(spacing: 8, children: [
+          for (final c in _swatches)
+            _Swatch(
+              color: c,
+              size: 28,
+              selected: c == _placement.fillArgb,
+              onTap: () {
+                setState(() => _placement = _placement.copyWith(fillArgb: c));
+                _schedulePreview(immediate: true);
+              },
+            ),
+        ]),
+      ],
+    ]);
+  }
+
+  void _dragBackground(DragUpdateDetails d, Size box) {
+    // Follow the finger: a zoomed-in picture moves its visible part, a
+    // smaller picture moves around the frame.
+    final sign = _placement.scale >= 1.0 ? -1.0 : 1.0;
+    setState(() => _placement = _placement.copyWith(
+          panX: _placement.panX + sign * 2 * d.delta.dx / box.width,
+          panY: _placement.panY + sign * 2 * d.delta.dy / box.height,
+        ));
+    _schedulePreview();
+  }
+
   Widget _previewArea(ThemeData theme, VideoInfo info) {
-    final aspect = info.aspectRatio;
+    final (fw, fh) = _frame.sizeFor(info.displayWidth, info.displayHeight);
+    final aspect = _showOriginal ? info.aspectRatio : fw / fh;
     Widget child;
     if (_showOriginal) {
       child = _player.value.isInitialized
@@ -298,6 +429,14 @@ class _EditorScreenState extends State<EditorScreen> {
           : const Center(child: CircularProgressIndicator());
     } else if (_preview != null) {
       child = Image.memory(_preview!, fit: BoxFit.contain, gaplessPlayback: true);
+      if (_movable) {
+        child = LayoutBuilder(
+          builder: (context, c) => GestureDetector(
+            onPanUpdate: (d) => _dragBackground(d, c.biggest),
+            child: child,
+          ),
+        );
+      }
     } else if (_previewError != null) {
       child = Center(
         child: Padding(
@@ -338,30 +477,26 @@ class _EditorScreenState extends State<EditorScreen> {
           runSpacing: 10,
           children: [
             for (final c in _swatches)
-              GestureDetector(
+              _Swatch(
+                color: c,
+                selected: c == _color,
                 onTap: () {
                   setState(() => _color = c);
                   _schedulePreview(immediate: true);
                 },
-                child: Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: Color(c),
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: c == _color ? theme.colorScheme.primary : Colors.white24,
-                      width: c == _color ? 3 : 1,
-                    ),
-                  ),
-                ),
               ),
           ],
         );
       case _BgKind.image:
-        return _fileRow(Icons.image_outlined, _imagePath, 'Choose image', _pickImage);
+        return Column(children: [
+          _fileRow(Icons.image_outlined, _imagePath, 'Choose image', _pickImage),
+          if (_imagePath != null) _placementControls(theme),
+        ]);
       case _BgKind.video:
-        return _fileRow(Icons.movie_outlined, _videoPath, 'Choose video', _pickVideo);
+        return Column(children: [
+          _fileRow(Icons.movie_outlined, _videoPath, 'Choose video', _pickVideo),
+          if (_videoPath != null) _placementControls(theme),
+        ]);
       case _BgKind.blur:
         return _labeledSlider('Blur strength', (_blur - 0.005) / 0.075,
             (v) => _blur = 0.005 + v * 0.075,
@@ -399,5 +534,88 @@ class _EditorScreenState extends State<EditorScreen> {
         Text(right, style: small),
       ]),
     ]);
+  }
+}
+
+class _Swatch extends StatelessWidget {
+  const _Swatch({required this.color, required this.selected, required this.onTap, this.size = 40});
+  final int color;
+  final bool selected;
+  final VoidCallback onTap;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = Theme.of(context).colorScheme.primary;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: Color(color),
+          shape: BoxShape.circle,
+          border: Border.all(color: selected ? primary : Colors.white24, width: selected ? 3 : 1),
+        ),
+      ),
+    );
+  }
+}
+
+/// A frame-shape choice drawn as a small proportional rectangle.
+class _ShapeChip extends StatelessWidget {
+  const _ShapeChip({
+    required this.shape,
+    required this.sourceRatio,
+    required this.selected,
+    required this.onTap,
+  });
+  final FrameShape shape;
+  final double sourceRatio;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final r = shape.ratio ?? sourceRatio;
+    const box = 34.0;
+    final w = r >= 1 ? box : box * r;
+    final h = r >= 1 ? box / r : box;
+    final fg = selected ? scheme.primary : scheme.onSurfaceVariant;
+    return Material(
+      color: selected ? scheme.primary.withValues(alpha: 0.14) : scheme.surfaceContainerHigh,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Container(
+          width: 66,
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: selected ? scheme.primary : Colors.transparent, width: 1.5),
+          ),
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            SizedBox(
+              width: box,
+              height: box,
+              child: Center(
+                child: Container(
+                  width: w,
+                  height: h,
+                  decoration: BoxDecoration(
+                    border: Border.all(color: fg, width: 2),
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(shape.label, style: TextStyle(fontSize: 12, color: fg, fontWeight: FontWeight.w600)),
+          ]),
+        ),
+      ),
+    );
   }
 }

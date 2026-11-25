@@ -80,11 +80,45 @@ class ColorBackground extends Background {
   Map<String, Object?> toMap() => {'type': 'color', 'argb': argb};
 }
 
+/// How a background picture or video sits behind the person.
+class BackgroundPlacement {
+  const BackgroundPlacement({
+    this.scale = 1.0,
+    this.panX = 0.0,
+    this.panY = 0.0,
+    this.fillArgb = 0xFF000000,
+  });
+
+  /// 1 = exactly covers the frame. Below 1 the picture gets smaller and
+  /// [fillArgb] shows around it; above 1 it zooms in.
+  final double scale;
+
+  /// -1..1: which part shows (or where a smaller picture sits).
+  /// -1 = left/top edge, 0 = centred, 1 = right/bottom edge.
+  final double panX;
+  final double panY;
+  final int fillArgb;
+
+  bool get isDefault => scale == 1.0 && panX == 0.0 && panY == 0.0;
+
+  Map<String, Object?> toMap() =>
+      {'scale': scale, 'panX': panX, 'panY': panY, 'fill': fillArgb};
+
+  BackgroundPlacement copyWith({double? scale, double? panX, double? panY, int? fillArgb}) =>
+      BackgroundPlacement(
+        scale: scale ?? this.scale,
+        panX: (panX ?? this.panX).clamp(-1.0, 1.0),
+        panY: (panY ?? this.panY).clamp(-1.0, 1.0),
+        fillArgb: fillArgb ?? this.fillArgb,
+      );
+}
+
 class ImageBackground extends Background {
-  const ImageBackground(this.path);
+  const ImageBackground(this.path, {this.placement = const BackgroundPlacement()});
   final String path;
+  final BackgroundPlacement placement;
   @override
-  Map<String, Object?> toMap() => {'type': 'image', 'path': path};
+  Map<String, Object?> toMap() => {'type': 'image', 'path': path, ...placement.toMap()};
 }
 
 class BlurBackground extends Background {
@@ -97,10 +131,46 @@ class BlurBackground extends Background {
 
 class VideoBackground extends Background {
   /// Loops if shorter than the main video; scaled with aspect-fill.
-  const VideoBackground(this.path);
+  const VideoBackground(this.path, {this.placement = const BackgroundPlacement()});
   final String path;
+  final BackgroundPlacement placement;
   @override
-  Map<String, Object?> toMap() => {'type': 'video', 'path': path};
+  Map<String, Object?> toMap() => {'type': 'video', 'path': path, ...placement.toMap()};
+}
+
+/// Shape of the exported frame.
+enum FrameShape {
+  original('original', 'Original', null),
+  portrait('9:16', '9:16', 9 / 16),
+  square('1:1', '1:1', 1.0),
+  portrait45('4:5', '4:5', 4 / 5),
+  landscape('16:9', '16:9', 16 / 9);
+
+  const FrameShape(this.id, this.label, this.ratio);
+  final String id;
+  final String label;
+
+  /// width / height, or null to keep the source's shape.
+  final double? ratio;
+}
+
+/// Output frame: its shape, and whether the whole video is shown ([fit],
+/// with the new background filling the rest) or it fills the frame (cropped).
+class OutputFrame {
+  const OutputFrame({this.shape = FrameShape.original, this.fit = false});
+  final FrameShape shape;
+  final bool fit;
+
+  Map<String, Object?> toMap() => {'aspect': shape.id, 'fit': fit};
+
+  /// Display size of the exported video for a source shown at [w] x [h].
+  (int, int) sizeFor(int w, int h) {
+    final r = shape.ratio;
+    if (r == null) return (w, h);
+    final short = w < h ? w : h;
+    int even(double v) => ((v / 2).round() * 2).clamp(2, 1 << 30);
+    return r >= 1 ? (even(short * r), short) : (short, even(short / r));
+  }
 }
 
 /// Matte tuning. Defaults are tuned for people at 0.5-4 m from the camera.
@@ -221,13 +291,14 @@ class HbrEngine {
     required int timeMs,
     required Background background,
     MatteSettings settings = const MatteSettings(),
+    OutputFrame frame = const OutputFrame(),
     int maxSize = 960,
   }) async {
     final bytes = await _channel.invokeMethod<Uint8List>('preview', {
       'path': path,
       'timeMs': timeMs,
       'background': background.toMap(),
-      'settings': settings.toMap(),
+      'settings': {...settings.toMap(), ...frame.toMap()},
       'maxSize': maxSize,
     });
     return bytes!;
@@ -243,6 +314,7 @@ class HbrEngine {
     required String outputPath,
     required Background background,
     MatteSettings settings = const MatteSettings(),
+    OutputFrame frame = const OutputFrame(),
   }) async* {
     final jobId = DateTime.now().microsecondsSinceEpoch.toString();
     final events = _allProgress.where((e) => e.jobId == jobId);
@@ -254,7 +326,7 @@ class HbrEngine {
         'input': inputPath,
         'output': outputPath,
         'background': background.toMap(),
-        'settings': settings.toMap(),
+        'settings': {...settings.toMap(), ...frame.toMap()},
       });
       await for (final e in controller.stream) {
         yield e;

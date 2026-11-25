@@ -25,4 +25,19 @@ void main() {
     expect(const BlurBackground(0.05).toMap(), {'type': 'blur', 'amount': 0.05});
     expect(const MatteSettings().toMap()['temporalStrength'], 0.6);
   });
+
+  test('frame sizes keep the short side', () {
+    expect(const OutputFrame(shape: FrameShape.square).sizeFor(1920, 1080), (1080, 1080));
+    expect(const OutputFrame(shape: FrameShape.portrait).sizeFor(1920, 1080), (1080, 1920));
+    expect(const OutputFrame(shape: FrameShape.portrait45).sizeFor(1080, 1920), (1080, 1350));
+    expect(const OutputFrame().sizeFor(1080, 1920), (1080, 1920));
+    expect(const OutputFrame(shape: FrameShape.landscape, fit: true).toMap(), {'aspect': '16:9', 'fit': true});
+  });
+
+  test('background placement serialises and clamps', () {
+    final p = const BackgroundPlacement().copyWith(scale: 1.5, panX: 3);
+    expect(p.panX, 1.0);
+    expect(ImageBackground('/a.jpg', placement: p).toMap(),
+        {'type': 'image', 'path': '/a.jpg', 'scale': 1.5, 'panX': 1.0, 'panY': 0.0, 'fill': 0xFF000000});
+  });
 }
