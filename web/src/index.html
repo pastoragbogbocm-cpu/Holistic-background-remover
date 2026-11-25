@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Holistic Background Remover</title>
+<meta name="theme-color" content="#0e1013">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+/* VOICE: a quiet professional editing bay; the footage is the hero.
+   IDEA: a cutting-room light table: the picture sits on a dark table, tools in a side rack.
+   PICTURE: the live processed frame, large, with a split before/after wipe.
+   COLOUR and TYPE: graphite table, white ink, one teal accent for actions; Hanken Grotesk.
+   LAYOUT: picture left (two thirds), tool rack right; stacks below 860px. */
+:root{color-scheme:dark;--bg:#0e1013;--panel:#161a1f;--line:#262c33;--ink:#eef2f4;--mute:#97a3ad;--acc:#2dd4bf;--acc-ink:#04201c;--err:#ff7a7a}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Hanken Grotesk",system-ui,-apple-system,"Segoe UI",sans-serif;overflow-x:clip}
+header{display:flex;align-items:center;gap:14px;padding:14px max(3vw,16px);border-bottom:1px solid var(--line);flex-wrap:wrap}
+header h1{font-size:19px;font-weight:700;margin:0;letter-spacing:-.01em}
+header .tag{color:var(--mute);font-size:14px}
+header .pill{margin-left:auto;font-size:13px;color:var(--acc);border:1px solid #1f4d47;padding:4px 10px;border-radius:999px}
+main{display:grid;grid-template-columns:minmax(0,2fr) minmax(300px,1fr);gap:20px;padding:20px max(3vw,16px);max-width:1440px;margin:0 auto}
+@media(max-width:860px){main{grid-template-columns:minmax(0,1fr)}}
+.stage{background:#07080a;border:1px solid var(--line);border-radius:16px;position:relative;min-height:340px;display:grid;place-items:center;overflow:hidden}
+.stage canvas,.stage video{max-width:100%;max-height:70vh;display:block}
+.drop{display:grid;place-items:center;text-align:center;gap:10px;padding:48px 24px;width:100%;height:100%;min-height:340px;cursor:pointer;border:2px dashed transparent;border-radius:16px}
+.drop.over{border-color:var(--acc)}
+.drop h2{font-size:clamp(26px,3.4vw,40px);line-height:1.08;font-weight:300;margin:0;text-wrap:balance}
+.drop p{color:var(--mute);margin:0;max-width:46ch}
+.busy{position:absolute;top:12px;right:12px;width:18px;height:18px;border-radius:50%;border:2px solid #2b3138;border-top-color:var(--acc);animation:spin .8s linear infinite;display:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.busy{animation:none}}
+.bar{display:flex;gap:12px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.bar input[type=range]{flex:1 1 220px}
+.meta{color:var(--mute);font-size:14px;margin-top:6px}
+.rack{display:flex;flex-direction:column;gap:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+.card h3{margin:0 0 10px;font-size:16px;font-weight:600}
+.seg{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:#0f1216;border:1px solid var(--line);border-radius:10px;padding:3px;gap:3px}
+.seg button,.toggle button{background:none;border:0;color:var(--mute);font:inherit;font-size:14px;padding:9px 4px;border-radius:8px;cursor:pointer;min-height:40px}
+.seg button[aria-pressed=true],.toggle button[aria-pressed=true]{background:#232a31;color:var(--ink)}
+.toggle{display:inline-flex;background:#0f1216;border:1px solid var(--line);border-radius:10px;padding:3px}
+.swatches{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+.sw{width:36px;height:36px;border-radius:50%;border:1px solid #ffffff30;cursor:pointer;padding:0}
+.sw[aria-pressed=true]{outline:3px solid var(--acc);outline-offset:2px}
+label.row{display:block;font-size:14px;margin-top:12px}
+label.row span{display:flex;justify-content:space-between;color:var(--mute)}
+input[type=range]{width:100%;accent-color:var(--acc);height:28px}
+input[type=color]{width:44px;height:36px;border:0;background:none;padding:0;cursor:pointer}
+.check{display:flex;gap:10px;align-items:center;margin-top:12px;font-size:14px}
+.check input{width:20px;height:20px;accent-color:var(--acc)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 18px;border-radius:11px;border:1px solid var(--line);background:#1d232a;color:var(--ink);font:inherit;font-weight:600;cursor:pointer}
+.btn.primary{background:var(--acc);border-color:var(--acc);color:var(--acc-ink)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn:focus-visible,.seg button:focus-visible,.sw:focus-visible,.toggle button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.full{width:100%}
+.file{font-size:14px;color:var(--mute);margin-top:10px;overflow-wrap:anywhere}
+progress{width:100%;height:10px;accent-color:var(--acc)}
+.small{font-size:13px;color:var(--mute)}
+.err{color:var(--err);font-size:14px}
+.result video{width:100%;border-radius:12px;background:#000;margin-top:10px}
+.hidden{display:none!important}
+footer{color:var(--mute);font-size:13px;padding:8px max(3vw,16px) 28px;max-width:1440px;margin:0 auto}
+</style>
+</head>
+<body>
+<header>
+  <h1>Holistic Background Remover</h1>
+  <span class="tag">Remove or replace video backgrounds at original quality</span>
+  <span class="pill" id="pill">Runs in your browser · nothing is uploaded</span>
+</header>
+<main>
+  <section>
+    <div class="stage" id="stage">
+      <label class="drop" id="drop" for="file">
+        <div>
+          <h2>Drop a video here</h2>
+          <p>MP4 or MOV from your phone or camera. It stays on this device; processing runs offline in the browser.</p>
+          <p style="margin-top:14px"><span class="btn primary">Choose a video</span></p>
+        </div>
+      </label>
+      <canvas id="out" class="hidden" aria-label="Processed preview"></canvas>
+      <video id="orig" class="hidden" controls playsinline muted></video>
+      <div class="busy" id="busy"></div>
+    </div>
+    <input type="file" id="file" accept="video/*" class="hidden">
+    <div class="bar hidden" id="scrub">
+      <input type="range" id="time" min="0" max="1000" value="200" aria-label="Preview position">
+      <div class="toggle" role="group" aria-label="View">
+        <button id="vRes" aria-pressed="true">Result</button>
+        <button id="vOrig" aria-pressed="false">Original</button>
+      </div>
+      <button class="btn" id="another">Open another</button>
+    </div>
+    <div class="meta" id="meta"></div>
+    <div class="err" id="err"></div>
+  </section>
+
+  <aside class="rack">
+    <div class="card">
+      <h3>Background</h3>
+      <div class="seg" role="group" aria-label="Background type">
+        <button data-k="color" aria-pressed="true">Color</button>
+        <button data-k="image" aria-pressed="false">Image</button>
+        <button data-k="blur" aria-pressed="false">Blur</button>
+        <button data-k="video" aria-pressed="false">Video</button>
+      </div>
+      <div id="optColor">
+        <div class="swatches" id="swatches"></div>
+        <label class="check">Custom <input type="color" id="custom" value="#00b140"></label>
+      </div>
+      <div id="optImage" class="hidden"><button class="btn full" id="pickImg" style="margin-top:12px">Choose image</button><div class="file" id="imgName"></div></div>
+      <div id="optVideo" class="hidden"><button class="btn full" id="pickVid" style="margin-top:12px">Choose background video</button><div class="file" id="vidName"></div></div>
+      <div id="optBlur" class="hidden"><label class="row"><span>Blur strength <b id="blurV"></b></span><input type="range" id="blur" min="0.005" max="0.08" step="0.001" value="0.03"></label></div>
+      <input type="file" id="imgFile" accept="image/*" class="hidden">
+      <input type="file" id="vidFile" accept="video/*" class="hidden">
+    </div>
+
+    <div class="card">
+      <h3>Edges</h3>
+      <label class="row"><span>Edge smoothing <span>Raw · Smoothest</span></span><input type="range" id="smooth" min="0" max="1" step="0.05" value="0.8"></label>
+      <label class="row"><span>Edge softness <span>Crisp · Soft</span></span><input type="range" id="soft" min="0" max="1" step="0.05" value="0.5"></label>
+      <label class="row"><span>Stability over time <span>Off · Max</span></span><input type="range" id="temporal" min="0" max="1" step="0.05" value="0.6"></label>
+      <label class="check"><input type="checkbox" id="clean" checked> Clean edge colours (removes old background tint from hair)</label>
+    </div>
+
+    <div class="card">
+      <h3>Export</h3>
+      <p class="small" id="keeps">Exports at the source resolution, frame rate, rotation and bitrate, with the original audio copied untouched.</p>
+      <button class="btn primary full" id="export" disabled>Export video</button>
+      <div id="prog" class="hidden" style="margin-top:12px">
+        <progress id="pbar" max="1" value="0"></progress>
+        <div class="small" id="ptext">Starting…</div>
+        <button class="btn" id="cancel" style="margin-top:8px">Cancel</button>
+      </div>
+      <div class="result hidden" id="result">
+        <video id="resVid" controls playsinline></video>
+        <div class="small" id="resText"></div>
+        <button class="btn primary full" id="save" style="margin-top:10px">Save video</button>
+      </div>
+    </div>
+  </aside>
+</main>
+<footer>Person detection: MediaPipe selfie segmenter, bundled. Matte engine: the same C++ engine as the phone apps, compiled to WebAssembly. Needs a browser with WebCodecs (Chrome, Edge, Safari 17+, recent Firefox).</footer>
+<script type="module" src="app.js"></script>
+</body>
+</html>

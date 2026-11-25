@@ -15,6 +15,7 @@ so the person never smears into it), or a looping video.
 | `core/` | Portable C++17 matte engine shared by every platform (C ABI). Temporal smoothing, full-resolution edge refinement, Y'CbCr compositing, colour/scale/rotate helpers. Unit tests in `core/tests`. |
 | `packages/hbr_engine/` | Flutter plugin: Dart API + native pipelines. Android: MediaPipe selfie segmenter + MediaCodec + MediaMuxer (Kotlin, JNI into `core`). iOS: Vision person segmentation + AVAssetReader/Writer (Swift, links `core` via symlinks). |
 | `app/` | The Flutter app: import, live processed preview, background picker, matte settings, export with progress, save to gallery. |
+| `web/` | Web version: same C++ engine compiled to WebAssembly, WebCodecs decode/encode, MediaPipe segmentation, offline-capable. Build with `web/build.sh` (needs emsdk + node), serve `web/dist`. |
 | `tools/harness/` | Desktop harness that runs the exact same per-frame pipeline with ffmpeg + the same `.tflite` model, used to validate quality preservation without a phone. |
 | `ARCHITECTURE.md` | How it works and why. |
 

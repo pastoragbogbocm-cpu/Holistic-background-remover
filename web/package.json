@@ -1,0 +1,4 @@
+{"name":"holistic-bg-web","private":true,"version":"0.2.0","type":"module",
+ "scripts":{"build":"./build.sh"},
+ "dependencies":{"@mediapipe/tasks-vision":"1.2.3","mp4box":"2.6.0","mp4-muxer":"5.2.2"},
+ "devDependencies":{"esbuild":"^0.25.0"}}
