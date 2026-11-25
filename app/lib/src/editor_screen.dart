@@ -25,8 +25,10 @@ const _swatches = <int>[
 enum _BgKind { color, image, blur, video }
 
 class EditorScreen extends StatefulWidget {
-  const EditorScreen({super.key, required this.path, required this.info});
+  const EditorScreen({super.key, required this.path, required this.info, this.initialImage});
   final String path;
+  /// Background picture to start with (on-device tests).
+  final String? initialImage;
   final VideoInfo info;
 
   @override
@@ -61,6 +63,10 @@ class _EditorScreenState extends State<EditorScreen> {
   void initState() {
     super.initState();
     _timeMs = (widget.info.durationMs * 0.2).round();
+    if (widget.initialImage != null) {
+      _imagePath = widget.initialImage;
+      _kind = _BgKind.image;
+    }
     _schedulePreview(immediate: true);
   }
 

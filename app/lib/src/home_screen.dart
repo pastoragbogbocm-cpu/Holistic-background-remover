@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:hbr_engine/hbr_engine.dart';
 import 'package:material_ui/material_ui.dart';
@@ -26,6 +27,29 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _openFromLaunch();
+  }
+
+  /// Opens a video (and background picture) passed in the launch intent.
+  /// Used by the on-device tests to drive the real editor.
+  Future<void> _openFromLaunch() async {
+    try {
+      final args = await const MethodChannel('holistic/launch').invokeMapMethod<String, String>('args');
+      final video = args?['video'];
+      if (video == null) return;
+      final info = await HbrEngine.probe(video);
+      if (!mounted) return;
+      await Navigator.of(context).push(MaterialPageRoute<void>(
+        builder: (_) => EditorScreen(path: video, info: info, initialImage: args?['image']),
+      ));
+    } catch (_) {
+      // normal start: no launch arguments
+    }
+  }
 
   Future<void> _pick() async {
     setState(() => _loading = true);

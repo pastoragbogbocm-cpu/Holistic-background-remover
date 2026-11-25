@@ -86,8 +86,8 @@ jobs:
         run: |
           if grep -E "ANR in com\.holistic" logcat.txt; then echo "::error::The app stopped responding during the tests"; exit 1; fi
 
-      - name: Show app log when a device test fails
-        if: failure()
+      - name: Show app log from the device tests
+        if: always()
         run: grep -E "HbrEngine|HbrTest|AndroidRuntime|whisper|MediaMuxer|MPEG4Writer" logcat.txt | tail -200 || true
 
       - name: Upload test report
