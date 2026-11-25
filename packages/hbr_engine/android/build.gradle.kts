@@ -43,6 +43,8 @@ android {
 
     defaultConfig {
         minSdk = 24
+        // Keep rules apps using this plugin need for MediaPipe under R8.
+        consumerProguardFiles("consumer-rules.pro")
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }

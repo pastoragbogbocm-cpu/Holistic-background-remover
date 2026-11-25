@@ -15,6 +15,11 @@ import kotlin.math.roundToInt
 
 class ExportCancelled : Exception("cancelled")
 
+class NoPersonFound : Exception(
+    "No person was detected in this video, so the background could not be replaced. " +
+        "Use a video where a person is clearly visible.",
+)
+
 /**
  * Full-quality export:
  *  - decode every frame at full resolution (hardware decoder)
@@ -75,11 +80,13 @@ class Exporter(
                         val started = System.nanoTime()
                         var frames = 0
                         var firstPts = -1L
+                        var personFrames = 0
                         while (decoder.next()) {
                             if (isCancelled()) throw ExportCancelled()
                             val pts = decoder.ptsUs
                             if (firstPts < 0) firstPts = pts
                             val mask = seg.segment(decoder.frame, meta.rotation, meta.matrix, meta.fullRange, pts)
+                            if (mask.coverage() > 0.005f) personFrames++
                             engine.refine(decoder.frame, mask.buffer, mask.width, mask.height, meta.rotation)
                             val bgFrame = bg.next()
 
@@ -114,6 +121,9 @@ class Exporter(
                         enc.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         drain(enc, true)
                         check(muxerStarted && frames > 0) { "No frames were encoded" }
+                        // Never hand back a video that is only the new background.
+                        if (personFrames == 0) throw NoPersonFound()
+                        Log.i("HbrEngine", "Person found in $personFrames of $frames frames")
                         audio?.copyUntil(mux, Long.MAX_VALUE)
                         val secs = (System.nanoTime() - started) / 1e9
                         onProgress(1.0, frames, frames / secs)

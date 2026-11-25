@@ -14,7 +14,24 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /** Person probability mask, upright (display orientation), float32 0..1. */
-class PersonMask(val buffer: ByteBuffer, val width: Int, val height: Int)
+class PersonMask(val buffer: ByteBuffer, val width: Int, val height: Int) {
+    /** Fraction of mask pixels that are confidently the person (>= 0.5). */
+    fun coverage(): Float {
+        val f = buffer.duplicate().order(ByteOrder.nativeOrder()).asFloatBuffer()
+        val n = width * height
+        if (n == 0) return 0f
+        var hit = 0
+        // Sampling every 4th pixel is plenty for a 256 px mask.
+        var i = 0
+        var seen = 0
+        while (i < n) {
+            if (f.get(i) >= 0.5f) hit++
+            seen++
+            i += 4
+        }
+        return hit.toFloat() / seen
+    }
+}
 
 /**
  * On-device person segmentation with MediaPipe's selfie segmenter. The
@@ -93,7 +110,10 @@ class Segmenter(
         fun create(context: Context, landscape: Boolean, video: Boolean): ImageSegmenter {
             val model = if (landscape) "selfie_segmenter_landscape.tflite" else "selfie_segmenter.tflite"
             val mode = if (video) RunningMode.VIDEO else RunningMode.IMAGE
-            for (delegate in listOf(Delegate.GPU, Delegate.CPU)) {
+            // CPU (XNNPACK) first: the model is tiny (256 px), so it is fast,
+            // and it gives identical results on every phone. Some mobile GPU
+            // drivers return empty masks for this model.
+            for (delegate in listOf(Delegate.CPU, Delegate.GPU)) {
                 try {
                     val base = BaseOptions.builder().setModelAssetPath(model).setDelegate(delegate).build()
                     val opts = ImageSegmenter.ImageSegmenterOptions.builder()
