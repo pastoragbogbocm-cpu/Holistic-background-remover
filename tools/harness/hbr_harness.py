@@ -69,6 +69,8 @@ def main():
     ap.add_argument("input")
     ap.add_argument("output")
     ap.add_argument("--lib", required=True)
+    ap.add_argument("--softness", type=float, default=None, help="0 crisp .. 1 soft (as in the apps)")
+    ap.add_argument("--edge-radius", type=float, default=None)
     ap.add_argument("--model", required=True)
     ap.add_argument("--landscape-model")
     ap.add_argument("--bg", default="color:#00b140")
@@ -130,6 +132,11 @@ def main():
         cfg.motion_sharpen = args.motion_sharpen
     if args.edge_smoothing is not None:
         cfg.edge_smoothing = args.edge_smoothing
+    if args.softness is not None:
+        low = 0.3 * (1 - min(max(args.softness, 0), 1))
+        cfg.matte_low, cfg.matte_high = low, 1 - low
+    if args.edge_radius is not None:
+        cfg.edge_radius = args.edge_radius
     if args.no_decontaminate:
         cfg.decontaminate = 0
     eng = C.c_void_p(lib.hbr_create(C.byref(cfg)))

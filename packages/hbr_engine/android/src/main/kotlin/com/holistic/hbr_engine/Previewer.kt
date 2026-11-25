@@ -33,7 +33,7 @@ class Previewer(private val context: Context) : AutoCloseable {
         frame.buffer.put(src.yuv.duplicate().also { it.rewind() }).rewind()
         val mask = src.mask.duplicate().order(ByteOrder.nativeOrder()).also { it.rewind() }
 
-        val softness = (settings["edgeSoftness"] as? Number)?.toFloat() ?: 0.5f
+        val softness = (settings["edgeSoftness"] as? Number)?.toFloat() ?: 0.2f
         val smoothing = (settings["edgeSmoothing"] as? Number)?.toFloat() ?: 0.8f
         val clean = settings["cleanEdges"] as? Boolean ?: true
         val layout = Layout.from(settings, w, h, 0)

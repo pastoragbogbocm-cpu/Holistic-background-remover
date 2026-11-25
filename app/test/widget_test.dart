@@ -23,7 +23,17 @@ void main() {
   test('backgrounds serialise for the native engine', () {
     expect(const ColorBackground(0xFF00B140).toMap(), {'type': 'color', 'argb': 0xFF00B140});
     expect(const BlurBackground(0.05).toMap(), {'type': 'blur', 'amount': 0.05});
-    expect(const MatteSettings().toMap()['temporalStrength'], 0.6);
+    // crisper defaults: less trailing blur around a moving person
+    expect(const MatteSettings().toMap()['temporalStrength'], 0.45);
+    expect(const MatteSettings().toMap()['edgeSoftness'], 0.2);
+    // speaker position is sent only when moved; music start point is sent
+    expect(const OutputFrame().toMap().containsKey('personScale'), false);
+    final moved = const OutputFrame().copyWith(personScale: 0.5, personX: 2);
+    expect(moved.toMap()['personScale'], 0.5);
+    expect(moved.toMap()['personX'], 1.0);
+    final s = const Soundtrack(musicPath: '/a.mp3').copyWith(musicStartMs: 42000);
+    expect((s.toMap()['audio'] as Map)['musicStartMs'], 42000);
+    expect(s.copyWith(musicPath: '/b.mp3').musicStartMs, 0);
   });
 
   test('frame sizes keep the short side', () {

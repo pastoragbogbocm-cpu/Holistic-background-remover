@@ -55,8 +55,8 @@ class Exporter(
         val meta = decoder.meta
         val w = decoder.width
         val h = decoder.height
-        val temporal = (settings["temporalStrength"] as? Number)?.toFloat() ?: 0.6f
-        val softness = (settings["edgeSoftness"] as? Number)?.toFloat() ?: 0.5f
+        val temporal = (settings["temporalStrength"] as? Number)?.toFloat() ?: 0.45f
+        val softness = (settings["edgeSoftness"] as? Number)?.toFloat() ?: 0.2f
         val smoothing = (settings["edgeSmoothing"] as? Number)?.toFloat() ?: 0.8f
         val clean = settings["cleanEdges"] as? Boolean ?: true
         var encoder: MediaCodec? = null

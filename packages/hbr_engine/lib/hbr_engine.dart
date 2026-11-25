@@ -158,11 +158,49 @@ enum FrameShape {
 /// Output frame: its shape, and whether the whole video is shown ([fit],
 /// with the new background filling the rest) or it fills the frame (cropped).
 class OutputFrame {
-  const OutputFrame({this.shape = FrameShape.original, this.fit = false});
+  const OutputFrame({
+    this.shape = FrameShape.original,
+    this.fit = false,
+    this.personScale = 1.0,
+    this.personX = 0.0,
+    this.personY = 0.0,
+  });
   final FrameShape shape;
   final bool fit;
 
-  Map<String, Object?> toMap() => {'aspect': shape.id, 'fit': fit};
+  /// Size of the speaker's video: 1 = fills (or fits) the frame, smaller
+  /// shows more background around it, larger zooms in.
+  final double personScale;
+
+  /// Where the speaker's video sits, -1..1 (left/top .. right/bottom).
+  final double personX;
+  final double personY;
+
+  bool get personMoved => personScale != 1.0 || personX != 0.0 || personY != 0.0;
+
+  OutputFrame copyWith({FrameShape? shape, bool? fit, double? personScale, double? personX, double? personY}) =>
+      OutputFrame(
+        shape: shape ?? this.shape,
+        fit: fit ?? this.fit,
+        personScale: (personScale ?? this.personScale).clamp(0.3, 2.5),
+        personX: (personX ?? this.personX).clamp(-1.0, 1.0),
+        personY: (personY ?? this.personY).clamp(-1.0, 1.0),
+      );
+
+  OutputFrame withoutPersonMove() => OutputFrame(shape: shape, fit: fit);
+
+  Map<String, Object?> toMap() => {
+        'aspect': shape.id,
+        'fit': fit,
+        if (personMoved) ...{'personScale': personScale, 'personX': personX, 'personY': personY},
+      };
+
+  /// Size of the speaker's video on a [fw] x [fh] frame, for a source shown at [w] x [h].
+  (double, double) personSizeOn(int fw, int fh, int w, int h) {
+    final sx = fw / w, sy = fh / h;
+    final s = (fit ? (sx < sy ? sx : sy) : (sx > sy ? sx : sy)) * personScale;
+    return (w * s, h * s);
+  }
 
   /// Display size of the exported video for a source shown at [w] x [h].
   (int, int) sizeFor(int w, int h) {
@@ -177,8 +215,8 @@ class OutputFrame {
 /// Matte tuning. Defaults are tuned for people at 0.5-4 m from the camera.
 class MatteSettings {
   const MatteSettings({
-    this.temporalStrength = 0.6,
-    this.edgeSoftness = 0.5,
+    this.temporalStrength = 0.45,
+    this.edgeSoftness = 0.2,
     this.edgeSmoothing = 0.8,
     this.cleanEdgeColors = true,
     this.highQualitySegmentation = true,
@@ -234,7 +272,11 @@ class Soundtrack {
     this.musicVolume = 0.3,
     this.voiceVolume = 1.0,
     this.duckMusic = true,
+    this.musicStartMs = 0,
   });
+
+  /// Where in the song the music starts (and loops back to), in ms.
+  final int musicStartMs;
 
   /// An audio file on the device (MP3, M4A/AAC, WAV, OGG...). Loops if
   /// shorter than the video and fades out at the end.
@@ -258,15 +300,25 @@ class Soundtrack {
           'musicVolume': musicVolume,
           'voiceVolume': voiceVolume,
           'duck': duckMusic,
+          'musicStartMs': musicStartMs,
         },
       };
 
-  Soundtrack copyWith({String? musicPath, bool clearMusic = false, double? musicVolume, double? voiceVolume, bool? duckMusic}) =>
+  Soundtrack copyWith({
+    String? musicPath,
+    bool clearMusic = false,
+    double? musicVolume,
+    double? voiceVolume,
+    bool? duckMusic,
+    int? musicStartMs,
+  }) =>
       Soundtrack(
         musicPath: clearMusic ? null : (musicPath ?? this.musicPath),
         musicVolume: musicVolume ?? this.musicVolume,
         voiceVolume: voiceVolume ?? this.voiceVolume,
         duckMusic: duckMusic ?? this.duckMusic,
+        // a new or removed song starts from its beginning
+        musicStartMs: (clearMusic || musicPath != null) ? (musicStartMs ?? 0) : (musicStartMs ?? this.musicStartMs),
       );
 }
 

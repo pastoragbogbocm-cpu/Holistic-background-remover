@@ -29,7 +29,12 @@ class EditorFreezeTest {
     private val app = instr.targetContext
 
     @Test(timeout = 180_000)
-    fun addingAPictureBackgroundDoesNotFreeze() {
+    fun openingTheEditorDoesNotFreeze() = checkEditor(withPicture = false)
+
+    @Test(timeout = 180_000)
+    fun addingAPictureBackgroundDoesNotFreeze() = checkEditor(withPicture = true)
+
+    private fun checkEditor(withPicture: Boolean) {
         val video = File(app.cacheDir, "editor_person.mp4")
         instr.context.assets.open("person.mp4").use { i -> video.outputStream().use { i.copyTo(it) } }
         val photo = File(app.cacheDir, "editor_bg.jpg")
@@ -51,6 +56,10 @@ class EditorFreezeTest {
                     // stuck: record where the main thread is, to find the cause
                     val st = Looper.getMainLooper().thread.stackTrace.take(40).joinToString("\n  at ")
                     android.util.Log.w("HbrTest", "main thread busy >1.2 s:\n  at $st")
+                    // what is waiting in the main queue (shows a stuck sync barrier, if any)
+                    val sb = StringBuilder()
+                    Looper.getMainLooper().dump({ line -> sb.append(line).append('\n') }, "  ")
+                    android.util.Log.w("HbrTest", "main queue:\n" + sb.toString().take(6000))
                     done.await(60, TimeUnit.SECONDS)
                 }
                 worst.set(maxOf(worst.get(), (System.nanoTime() - sent) / 1_000_000))
@@ -58,9 +67,8 @@ class EditorFreezeTest {
             }
         }
 
-        val intent = Intent(app, MainActivity::class.java)
-            .putExtra("video", video.path)
-            .putExtra("image", photo.path)
+        val intent = Intent(app, MainActivity::class.java).putExtra("video", video.path)
+        if (withPicture) intent.putExtra("image", photo.path)
         ActivityScenario.launch<MainActivity>(intent).use { s ->
             Thread.sleep(3_000) // app start (measured separately by AppStartsTest)
             worst.set(0)
@@ -68,7 +76,7 @@ class EditorFreezeTest {
             Thread.sleep(25_000) // editor opens, first preview with the picture, settles
             running.set(false)
             probe.join()
-            android.util.Log.i("HbrTest", "editor: worst main-thread delay ${worst.get()} ms")
+            android.util.Log.i("HbrTest", "editor (picture=$withPicture): worst main-thread delay ${worst.get()} ms")
             assertEquals(Lifecycle.State.RESUMED, s.state)
             assertTrue("screen stopped responding for ${worst.get()} ms after adding the background", worst.get() < 1500)
         }

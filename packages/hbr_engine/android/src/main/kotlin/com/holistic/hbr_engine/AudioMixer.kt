@@ -19,6 +19,8 @@ data class AudioMix(
     val voiceVolume: Float = 1f,
     /** Lower the music automatically while the person is talking. */
     val duck: Boolean = true,
+    /** Where in the song the music starts (and loops back to), in ms. */
+    val musicStartMs: Long = 0,
 ) {
     /** Nothing to mix: the original audio is copied bit for bit, as before. */
     val passthrough get() = musicPath == null && voiceVolume == 1f
@@ -31,6 +33,7 @@ data class AudioMix(
                 (a["musicVolume"] as? Number)?.toFloat() ?: 0.3f,
                 (a["voiceVolume"] as? Number)?.toFloat() ?: 1f,
                 a["duck"] as? Boolean ?: true,
+                ((a["musicStartMs"] as? Number)?.toLong() ?: 0L).coerceAtLeast(0L),
             )
         }
     }
@@ -39,7 +42,7 @@ data class AudioMix(
 /**
  * Decodes one audio track to interleaved 16-bit PCM, in chunks.
  */
-internal class PcmReader(path: String, track: Int?) : AutoCloseable {
+internal class PcmReader(path: String, track: Int?, private val startUs: Long = 0) : AutoCloseable {
     private val ex = MediaExtractor().apply { setDataSource(path) }
     private val trackIndex: Int = track ?: (0 until ex.trackCount).firstOrNull {
         ex.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
@@ -59,6 +62,7 @@ internal class PcmReader(path: String, track: Int?) : AutoCloseable {
 
     init {
         ex.selectTrack(trackIndex)
+        if (startUs > 0) ex.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
         codec = MediaCodec.createDecoderByType(inFormat.getString(MediaFormat.KEY_MIME)!!)
         codec.configure(inFormat, null, null, 0)
         codec.start()
@@ -104,6 +108,11 @@ internal class PcmReader(path: String, track: Int?) : AutoCloseable {
                 val sb = buf.order(ByteOrder.nativeOrder()).asShortBuffer()
                 pending = ShortArray(sb.remaining()).also { sb.get(it) }
                 pendingPos = 0
+                if (startUs > 0 && info.presentationTimeUs < startUs) {
+                    // decoded from the sync point before the chosen start: drop the part before it
+                    val skipFrames = ((startUs - info.presentationTimeUs) * sampleRate / 1_000_000L).toInt()
+                    pendingPos = minOf(pending.size, skipFrames * channels)
+                }
                 codec.releaseOutputBuffer(o, false)
                 if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) eos = true
             }
@@ -190,7 +199,9 @@ object AudioMixer {
         voice?.close()
         val ch = 2
         val voiceStream = if (voiceTrack >= 0) Stream({ PcmReader(inputPath, voiceTrack) }, rate, ch, loop = false) else null
-        val musicStream = mix.musicPath?.let { p -> Stream({ PcmReader(p, null) }, rate, ch, loop = true) }
+        val musicStream = mix.musicPath?.let { p ->
+            Stream({ PcmReader(p, null, mix.musicStartMs * 1000) }, rate, ch, loop = true)
+        }
 
         val fmt = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, rate, ch).apply {
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)

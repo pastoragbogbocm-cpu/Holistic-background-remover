@@ -259,7 +259,7 @@ function parseAspect(a) {
  * rotation. CW x CH is in stored orientation (the rotation tag is kept);
  * rect is where the source video sits on it.
  */
-export function layoutFor(engine, W, H, rot, aspect, fit) {
+export function layoutFor(engine, W, H, rot, aspect, fit, person) {
   const side = rot % 180 !== 0;
   const dW = side ? H : W, dH = side ? W : H;
   const r = parseAspect(aspect);
@@ -269,8 +269,20 @@ export function layoutFor(engine, W, H, rot, aspect, fit) {
     if (r >= 1) { ch = short; cw = even(short * r); } else { cw = short; ch = even(short / r); }
   }
   const CW = side ? ch : cw, CH = side ? cw : ch;
-  const identity = CW === W && CH === H;
-  const rect = identity ? { x: 0, y: 0, w: W, h: H } : engine.placeRect(W, H, CW, CH, fit);
+  const ps = person?.scale ?? 1, px = person?.x ?? 0, py = person?.y ?? 0;
+  const moved = ps !== 1 || px !== 0 || py !== 0;
+  const identity = CW === W && CH === H && !moved;
+  let rect;
+  if (identity) rect = { x: 0, y: 0, w: W, h: H };
+  else if (!moved) rect = engine.placeRect(W, H, CW, CH, fit);
+  else {
+    // speaker placed upright (dragging follows the finger), then into stored orientation
+    const d = engine.placeRect(dW, dH, cw, ch, fit, ps, px, py);
+    const sw = CW, sh = CH;
+    rect = rot === 90 ? { x: d.y, y: sh - (d.x + d.w), w: d.h, h: d.w }
+      : rot === 180 ? { x: sw - (d.x + d.w), y: sh - (d.y + d.h), w: d.w, h: d.h }
+        : rot === 270 ? { x: sw - (d.y + d.h), y: d.x, w: d.h, h: d.w } : d;
+  }
   return { CW, CH, dispW: cw, dispH: ch, rect, identity, W, H };
 }
 
@@ -354,7 +366,7 @@ export async function renderPreview({ videoEl, canvas, timeS, bg, settings, land
     const seg = await segmenter('IMAGE', landscape);
     const mask = personMask(seg.segment(c));
     eng.refine(mask.data, mask.w, mask.h, 0);
-    const L = layoutFor(eng, w, h, 0, frame?.aspect, frame?.fit);
+    const L = layoutFor(eng, w, h, 0, frame?.aspect, frame?.fit, frame?.person);
     let canvasBuf = 0, outBuf = 0;
     if (!L.identity) {
       canvasBuf = M._hbrw_alloc(i420Size(L.CW, L.CH));
@@ -438,7 +450,11 @@ async function mixSoundtrack(file, durationS, sound) {
     }
     g.gain.setValueCurveAtTime(curve, 0, Math.max(0.05, durationS));
     src.connect(g).connect(ctx.destination);
-    src.start(0);
+    // start at the chosen point of the song and loop back to it
+    const off = Math.min(Math.max(0, (sound.musicStartMs || 0) / 1000), Math.max(0, music.duration - 1));
+    src.loopStart = off;
+    src.loopEnd = music.duration;
+    src.start(0, off);
   }
   const mixed = await ctx.startRendering();
 
@@ -517,7 +533,7 @@ export async function exportVideo({ meta, bg, settings, onProgress, signal, fram
   const W = meta.width, H = meta.height, rot = meta.rotation;
   const warnings = [];
   const eng = new Engine(M, W, H, settings);
-  const L = layoutFor(eng, W, H, rot, frame?.aspect, frame?.fit);
+  const L = layoutFor(eng, W, H, rot, frame?.aspect, frame?.fit, frame?.person);
   const CW = L.CW, CH = L.CH;
   const canvasBuf = L.identity ? 0 : M._hbrw_alloc(i420Size(CW, CH));
   const outBuf = L.identity ? 0 : M._hbrw_alloc(i420Size(CW, CH));

@@ -51,6 +51,10 @@ class _EditorScreenState extends State<EditorScreen> {
   Soundtrack _sound = const Soundtrack();
   Captions _captions = const Captions();
   bool _showOriginal = false;
+  VideoPlayerController? _musicPlayer;
+  bool _musicListening = false;
+  /// What dragging the preview moves (when the background can move too).
+  bool _dragSpeaker = true;
   int _timeMs = 0;
 
   Uint8List? _preview;
@@ -74,6 +78,7 @@ class _EditorScreenState extends State<EditorScreen> {
   void dispose() {
     _debounce?.cancel();
     _player?.dispose();
+    _musicPlayer?.dispose();
     super.dispose();
   }
 
@@ -167,6 +172,7 @@ class _EditorScreenState extends State<EditorScreen> {
     if (_kind == _BgKind.image && _imagePath == null) return _pickImage();
     if (_kind == _BgKind.video && _videoPath == null) return _pickVideo();
     _player?.pause();
+    _musicPlayer?.pause();
     await showModalBottomSheet<void>(
       context: context,
       isDismissible: false,
@@ -369,7 +375,7 @@ class _EditorScreenState extends State<EditorScreen> {
                 sourceRatio: widget.info.aspectRatio,
                 selected: _frame.shape == shape,
                 onTap: () {
-                  setState(() => _frame = OutputFrame(shape: shape, fit: _frame.fit));
+                  setState(() => _frame = _frame.copyWith(shape: shape));
                   _schedulePreview(immediate: true);
                 },
               ),
@@ -386,7 +392,7 @@ class _EditorScreenState extends State<EditorScreen> {
           ],
           selected: {_frame.fit},
           onSelectionChanged: (s) {
-            setState(() => _frame = OutputFrame(shape: _frame.shape, fit: s.first));
+            setState(() => _frame = _frame.copyWith(fit: s.first));
             _schedulePreview(immediate: true);
           },
         ),
@@ -398,7 +404,66 @@ class _EditorScreenState extends State<EditorScreen> {
           style: theme.textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
         ),
       ],
+      const SizedBox(height: 16),
+      Row(children: [
+        Expanded(child: Text('Speaker', style: theme.textTheme.titleSmall)),
+        if (_frame.personMoved)
+          TextButton.icon(
+            onPressed: () {
+              setState(() => _frame = _frame.withoutPersonMove());
+              _schedulePreview(immediate: true);
+            },
+            icon: const Icon(Icons.restart_alt, size: 18),
+            label: const Text('Reset'),
+          ),
+      ]),
+      Row(children: [
+        const Icon(Icons.person_outline, size: 20),
+        Expanded(
+          child: Slider(
+            value: _frame.personScale,
+            min: 0.3,
+            max: 2.5,
+            label: '${(_frame.personScale * 100).round()}%',
+            divisions: 44,
+            onChanged: (v) => setState(() => _frame = _frame.copyWith(personScale: v)),
+            onChangeEnd: (_) => _schedulePreview(immediate: true),
+          ),
+        ),
+        SizedBox(width: 48, child: Text('${(_frame.personScale * 100).round()}%', textAlign: TextAlign.end)),
+      ]),
+      if (_movable)
+        SegmentedButton<bool>(
+          showSelectedIcon: false,
+          segments: const [
+            ButtonSegment(value: true, icon: Icon(Icons.person_pin_outlined), label: Text('Move speaker')),
+            ButtonSegment(value: false, icon: Icon(Icons.wallpaper_outlined), label: Text('Move background')),
+          ],
+          selected: {_dragSpeaker},
+          onSelectionChanged: (s) => setState(() => _dragSpeaker = s.first),
+        ),
+      const SizedBox(height: 4),
+      Text(
+        _dragSpeaker || !_movable
+            ? 'Drag the preview to move the speaker. Make them smaller to show more background.'
+            : 'Drag the preview to move the background picture.',
+        style: theme.textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+      ),
     ]);
+  }
+
+  /// Moves the speaker's video so it follows the finger exactly.
+  void _moveSpeaker(DragUpdateDetails d, Size box) {
+    final (fw, fh) = _frame.sizeFor(widget.info.displayWidth, widget.info.displayHeight);
+    final (pw, ph) = _frame.personSizeOn(fw, fh, widget.info.displayWidth, widget.info.displayHeight);
+    // the preview box shows the whole frame: box px -> frame px
+    final k = fw / box.width;
+    final freeX = fw - pw, freeY = fh - ph; // pan -1..1 spans this range
+    setState(() => _frame = _frame.copyWith(
+          personX: freeX.abs() < 1 ? _frame.personX : _frame.personX + 2 * d.delta.dx * k / freeX,
+          personY: freeY.abs() < 1 ? _frame.personY : _frame.personY + 2 * d.delta.dy * k / freeY,
+        ));
+    _schedulePreview();
   }
 
   Widget _placementControls(ThemeData theme) {
@@ -459,6 +524,46 @@ class _EditorScreenState extends State<EditorScreen> {
     final path = await pickOriginal(FileType.audio);
     if (path == null) return;
     setState(() => _sound = _sound.copyWith(musicPath: path));
+    _openMusicPlayer(path);
+  }
+
+  /// Player for the chosen song: gives its length and lets the person
+  /// listen from the chosen start point.
+  void _openMusicPlayer(String? path) {
+    final old = _musicPlayer;
+    _musicPlayer = null;
+    old?.dispose();
+    if (path == null) return;
+    final p = VideoPlayerController.file(File(path));
+    _musicPlayer = p;
+    p.initialize().then((_) {
+      if (mounted && _musicPlayer == p) setState(() {});
+    }).catchError((_) {});
+    p.addListener(() {
+      if (mounted && _musicPlayer == p && _musicListening != p.value.isPlaying) {
+        setState(() => _musicListening = p.value.isPlaying);
+      }
+    });
+  }
+
+  Future<void> _listenFromStart() async {
+    final p = _musicPlayer;
+    if (p == null || !p.value.isInitialized) return;
+    if (p.value.isPlaying) {
+      await p.pause();
+      return;
+    }
+    await p.seekTo(Duration(milliseconds: _sound.musicStartMs));
+    await p.play();
+  }
+
+  /// Latest start point: one second before the end of the song.
+  double get _musicStartMax =>
+      ((_musicPlayer?.value.duration.inMilliseconds ?? 0) - 1000).clamp(1, 1 << 30).toDouble();
+
+  static String _mmss(int ms) {
+    final s = ms ~/ 1000;
+    return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
   }
 
   Widget _soundSection(ThemeData theme) {
@@ -496,12 +601,41 @@ class _EditorScreenState extends State<EditorScreen> {
           if (music != null)
             IconButton(
               tooltip: 'Remove music',
-              onPressed: () => setState(() => _sound = _sound.copyWith(clearMusic: true)),
+              onPressed: () {
+                setState(() => _sound = _sound.copyWith(clearMusic: true));
+                _openMusicPlayer(null);
+              },
               icon: const Icon(Icons.close),
             ),
           FilledButton.tonal(onPressed: _pickMusic, child: Text(music == null ? 'Add music' : 'Change')),
         ]),
       ),
+      if (music != null && (_musicPlayer?.value.isInitialized ?? false)) ...[
+        const SizedBox(height: 8),
+        Row(children: [
+          IconButton.filledTonal(
+            tooltip: _musicListening ? 'Stop' : 'Listen from here',
+            onPressed: _listenFromStart,
+            icon: Icon(_musicListening ? Icons.stop_rounded : Icons.play_arrow_rounded),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Music starts at ${_mmss(_sound.musicStartMs)}', style: const TextStyle(fontWeight: FontWeight.w600)),
+              Slider(
+                value: _sound.musicStartMs.toDouble().clamp(0, _musicStartMax),
+                max: _musicStartMax,
+                onChanged: (v) => setState(() => _sound = _sound.copyWith(musicStartMs: v.round())),
+                onChangeEnd: (v) {
+                  if (_musicListening) _musicPlayer?.seekTo(Duration(milliseconds: v.round()));
+                },
+              ),
+            ]),
+          ),
+        ]),
+        Text('Slide to choose the part of the song you want. Song length ${_mmss(_musicPlayer!.value.duration.inMilliseconds)}.',
+            style: small),
+      ],
       if (music != null) ...[
         _volumeRow(Icons.music_note_outlined, 'Music', _sound.musicVolume, 1.0,
             (v) => _sound = _sound.copyWith(musicVolume: v)),
@@ -561,14 +695,12 @@ class _EditorScreenState extends State<EditorScreen> {
           : const Center(child: CircularProgressIndicator());
     } else if (_preview != null) {
       child = Image.memory(_preview!, fit: BoxFit.contain, gaplessPlayback: true);
-      if (_movable) {
-        child = LayoutBuilder(
-          builder: (context, c) => GestureDetector(
-            onPanUpdate: (d) => _dragBackground(d, c.biggest),
-            child: child,
-          ),
-        );
-      }
+      child = LayoutBuilder(
+        builder: (context, c) => GestureDetector(
+          onPanUpdate: (d) => _movable && !_dragSpeaker ? _dragBackground(d, c.biggest) : _moveSpeaker(d, c.biggest),
+          child: child,
+        ),
+      );
     } else if (_previewError != null) {
       child = Center(
         child: Padding(

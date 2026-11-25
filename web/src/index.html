@@ -130,6 +130,12 @@ footer{color:var(--mute);font-size:13px;padding:8px max(3vw,16px) 28px;max-width
         <button data-fit="1" aria-pressed="false">Whole video</button>
       </div>
       <p class="small hidden" id="fitHint" style="margin:8px 0 0"></p>
+      <div class="place">
+        <div class="row2"><b style="font-size:14px">Speaker</b><button class="btn hidden" id="resetPerson">Reset</button></div>
+        <label class="row"><span>Size <b id="pscaleV">100%</b></span><input type="range" id="pscale" min="0.3" max="2.5" step="0.05" value="1"></label>
+        <div class="toggle wide hidden" id="dragWhat"><button data-t="person" aria-pressed="true">Move speaker</button><button data-t="bg" aria-pressed="false">Move background</button></div>
+        <p class="small" id="dragHint" style="margin:8px 0 0">Drag the preview to move the speaker. Make them smaller to show more background.</p>
+      </div>
     </div>
 
     <div class="card">
@@ -164,6 +170,12 @@ footer{color:var(--mute);font-size:13px;padding:8px max(3vw,16px) 28px;max-width
         <button class="btn" id="musicPick">Add music</button>
       </div>
       <div id="musicOpts" class="hidden">
+        <div style="display:flex;gap:10px;align-items:center;margin-top:12px">
+          <button class="btn" id="mplay" aria-label="Listen from the start point">▶</button>
+          <label class="row" style="flex:1;margin:0"><span>Music starts at <b id="mstartV">0:00</b></span><input type="range" id="mstart" min="0" max="1" step="0.25" value="0"></label>
+        </div>
+        <p class="small" id="mlen" style="margin:4px 0 0">Slide to choose the part of the song you want.</p>
+        <audio id="maudio" preload="metadata" class="hidden"></audio>
         <label class="row"><span>Music volume <b id="mvolV">30%</b></span><input type="range" id="mvol" min="0" max="1" step="0.05" value="0.3"></label>
         <label class="check"><input type="checkbox" id="duck" checked> Lower music while talking</label>
       </div>
@@ -204,8 +216,8 @@ footer{color:var(--mute);font-size:13px;padding:8px max(3vw,16px) 28px;max-width
     <div class="card">
       <h3>Edges</h3>
       <label class="row"><span>Edge smoothing <span>Raw · Smoothest</span></span><input type="range" id="smooth" min="0" max="1" step="0.05" value="0.8"></label>
-      <label class="row"><span>Edge softness <span>Crisp · Soft</span></span><input type="range" id="soft" min="0" max="1" step="0.05" value="0.5"></label>
-      <label class="row"><span>Stability over time <span>Off · Max</span></span><input type="range" id="temporal" min="0" max="1" step="0.05" value="0.6"></label>
+      <label class="row"><span>Edge softness <span>Crisp · Soft</span></span><input type="range" id="soft" min="0" max="1" step="0.05" value="0.2"></label>
+      <label class="row"><span>Stability over time <span>Off · Max</span></span><input type="range" id="temporal" min="0" max="1" step="0.05" value="0.45"></label>
       <label class="check"><input type="checkbox" id="clean" checked> Clean edge colours (removes old background tint from hair)</label>
     </div>
 

@@ -9,13 +9,14 @@ const state = {
   kind: 'color', argb: SWATCHES[0], image: null, bgVideo: null, blur: 0.03,
   showOriginal: false, timeS: 0, rendering: false, again: false, abort: null, result: null,
   aspect: 'original', fit: false, placement: { scale: 1, panX: 0, panY: 0, fill: 0xff000000 },
+  person: { scale: 1, x: 0, y: 0 }, dragWhat: 'person',
   cues: [], capOn: true, capStyle: { preset: 'pop', position: 'bottom', size: 1, textColor: 0xffffffff, highlightColor: HIGHLIGHTS[0], uppercase: false },
   capAbort: null,
 };
 const captions = () => (state.cues.length ? { enabled: state.capOn, cues: state.cues, style: { ...state.capStyle } } : null);
 const SHAPES = [['original', 'Original'], ['9:16', '9:16'], ['1:1', '1:1'], ['4:5', '4:5'], ['16:9', '16:9']];
-const frame = () => ({ aspect: state.aspect, fit: state.fit });
-const sound = () => ({ music: state.music, musicVolume: +$('mvol').value, voiceVolume: +$('vvol').value, duck: $('duck').checked });
+const frame = () => ({ aspect: state.aspect, fit: state.fit, person: { ...state.person } });
+const sound = () => ({ music: state.music, musicVolume: +$('mvol').value, voiceVolume: +$('vvol').value, duck: $('duck').checked, musicStartMs: Math.round(+$('mstart').value * 1000) });
 
 const hex = (argb) => '#' + (argb & 0xffffff).toString(16).padStart(6, '0');
 const setErr = (m) => ($('err').textContent = m || '');
@@ -125,10 +126,30 @@ $('fillSw').addEventListener('click', (e) => {
 function drawPlacement() {
   const movable = (state.kind === 'image' && state.image) || (state.kind === 'video' && state.bgVideo);
   $('place').classList.toggle('hidden', !movable);
-  $('out').classList.toggle('movable', !!movable);
+  $('out').classList.add('movable');
+  $('dragWhat').classList.toggle('hidden', !movable);
+  if (!movable) state.dragWhat = 'person';
+  for (const b of $('dragWhat').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.t === state.dragWhat));
+  $('dragHint').textContent = state.dragWhat === 'bg'
+    ? 'Drag the preview to move the background picture.'
+    : 'Drag the preview to move the speaker. Make them smaller to show more background.';
+  const p = state.person;
+  $('pscale').value = p.scale;
+  $('pscaleV').textContent = Math.round(p.scale * 100) + '%';
+  $('resetPerson').classList.toggle('hidden', p.scale === 1 && !p.x && !p.y);
   $('scale').value = state.placement.scale;
   $('scaleV').textContent = Math.round(state.placement.scale * 100) + '%';
   $('fillRow').classList.toggle('hidden', state.placement.scale >= 1);
+}
+$('pscale').oninput = (e) => { state.person.scale = +e.target.value; drawPlacement(); schedule(); };
+$('resetPerson').onclick = () => { state.person = { scale: 1, x: 0, y: 0 }; drawPlacement(); schedule(true); };
+$('dragWhat').onclick = (e) => { const b = e.target.closest('button'); if (b) { state.dragWhat = b.dataset.t; drawPlacement(); } };
+/** Speaker's size on the output frame (display px) for the current settings. */
+function personSize() {
+  const m = state.meta, [fw, fh] = frameSize();
+  const sx = fw / m.displayWidth, sy = fh / m.displayHeight;
+  const s = (state.fit ? Math.min(sx, sy) : Math.max(sx, sy)) * state.person.scale;
+  return [fw, fh, m.displayWidth * s, m.displayHeight * s];
 }
 $('scale').oninput = (e) => { state.placement.scale = +e.target.value; drawPlacement(); schedule(); };
 $('resetPlace').onclick = () => { Object.assign(state.placement, { scale: 1, panX: 0, panY: 0 }); drawPlacement(); schedule(true); };
@@ -144,6 +165,18 @@ $('resetPlace').onclick = () => { Object.assign(state.placement, { scale: 1, pan
   out.addEventListener('pointermove', (e) => {
     if (!drag) return;
     const r = out.getBoundingClientRect();
+    if (state.dragWhat === 'person') {
+      // follow the finger exactly: pan -1..1 spans the free room
+      const [fw, fh, pw, ph] = personSize();
+      const k = fw / r.width, clamp = (v) => Math.max(-1, Math.min(1, v));
+      const fx = fw - pw, fy = fh - ph;
+      if (Math.abs(fx) >= 1) state.person.x = clamp(state.person.x + (2 * (e.clientX - drag.x) * k) / fx);
+      if (Math.abs(fy) >= 1) state.person.y = clamp(state.person.y + (2 * (e.clientY - drag.y) * k) / fy);
+      drag = { x: e.clientX, y: e.clientY };
+      drawPlacement();
+      schedule();
+      return;
+    }
     const sign = state.placement.scale >= 1 ? -1 : 1;
     const clamp = (v) => Math.max(-1, Math.min(1, v));
     state.placement.panX = clamp(state.placement.panX + sign * 2 * (e.clientX - drag.x) / r.width);
@@ -164,12 +197,39 @@ function drawSound() {
   $('musicDel').classList.toggle('hidden', !state.music);
   $('musicOpts').classList.toggle('hidden', !state.music);
   $('mvolV').textContent = Math.round(+$('mvol').value * 100) + '%';
+  $('mstartV').textContent = mmss(+$('mstart').value);
   $('vvolV').textContent = Math.round(+$('vvol').value * 100) + '%';
   updateKeeps();
 }
 $('musicPick').onclick = () => $('musicFile').click();
-$('musicFile').onchange = (e) => { const f = e.target.files[0]; if (f) { state.music = f; drawSound(); } };
-$('musicDel').onclick = () => { state.music = null; $('musicFile').value = ''; drawSound(); };
+function mmss(s) { return `${Math.floor(s / 60)}:${String(Math.floor(s) % 60).padStart(2, "0")}`; }
+function setMusic(f) {
+  state.music = f;
+  const a = $('maudio');
+  a.pause();
+  if (state.musicUrl) URL.revokeObjectURL(state.musicUrl);
+  state.musicUrl = f ? URL.createObjectURL(f) : null;
+  $('mstart').value = 0;
+  if (f) {
+    a.src = state.musicUrl;
+    a.onloadedmetadata = () => {
+      $('mstart').max = Math.max(1, Math.floor(a.duration - 1));
+      $('mlen').textContent = `Slide to choose the part of the song you want. Song length ${mmss(a.duration)}.`;
+      drawSound();
+    };
+  } else a.removeAttribute('src');
+  drawSound();
+}
+$('musicFile').onchange = (e) => { const f = e.target.files[0]; if (f) setMusic(f); };
+$('musicDel').onclick = () => { $('musicFile').value = ''; setMusic(null); };
+$('mstart').oninput = () => { drawSound(); if (!$('maudio').paused) $('maudio').currentTime = +$('mstart').value; };
+$('mplay').onclick = () => {
+  const a = $('maudio');
+  if (!a.paused) { a.pause(); return; }
+  a.currentTime = +$('mstart').value;
+  a.play().catch(() => {});
+};
+$('maudio').onplay = $('maudio').onpause = () => ($('mplay').textContent = $('maudio').paused ? '▶' : '■');
 $('mvol').oninput = drawSound;
 $('vvol').oninput = drawSound;
 
@@ -342,6 +402,8 @@ async function openVideo(file) {
     $('scrub').classList.remove('hidden');
     $('meta').textContent = `${file.name} · ${summary(meta)}`;
     state.cues = [];
+    state.person = { scale: 1, x: 0, y: 0 };
+    drawPlacement();
     drawCueList();
     drawCaptions();
     drawShapes();

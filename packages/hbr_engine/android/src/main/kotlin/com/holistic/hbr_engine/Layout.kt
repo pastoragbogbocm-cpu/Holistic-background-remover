@@ -16,6 +16,10 @@ class Layout(
     val rotation: Int,
     aspect: String?,
     val fit: Boolean,
+    /** The person's video: size (1 = fit/cover) and position (-1..1), display orientation. */
+    val personScale: Float = 1f,
+    val personX: Float = 0f,
+    val personY: Float = 0f,
 ) {
     val canvasW: Int
     val canvasH: Int
@@ -46,14 +50,38 @@ class Layout(
         }
         canvasW = if (sideways) ch else cw
         canvasH = if (sideways) cw else ch
-        identity = canvasW == srcW && canvasH == srcH
-        personRect = if (identity) Rect4(0, 0, srcW, srcH)
-        else HbrNative.placeRect(srcW, srcH, canvasW, canvasH, fit)
+        val moved = personScale != 1f || personX != 0f || personY != 0f
+        identity = canvasW == srcW && canvasH == srcH && !moved
+        personRect = when {
+            identity -> Rect4(0, 0, srcW, srcH)
+            !moved -> HbrNative.placeRect(srcW, srcH, canvasW, canvasH, fit)
+            else -> {
+                // place upright (so dragging follows the finger), then into stored orientation
+                val d = HbrNative.placeRect(dispW, dispH, cw, ch, fit, personScale, personX, personY)
+                toStored(d, cw, ch, rotation)
+            }
+        }
     }
 
     companion object {
-        fun from(settings: Map<*, *>, srcW: Int, srcH: Int, rotation: Int) =
-            Layout(srcW, srcH, rotation, settings["aspect"] as? String, settings["fit"] as? Boolean ?: false)
+        fun from(settings: Map<*, *>, srcW: Int, srcH: Int, rotation: Int) = Layout(
+            srcW, srcH, rotation, settings["aspect"] as? String, settings["fit"] as? Boolean ?: false,
+            (settings["personScale"] as? Number)?.toFloat()?.coerceIn(0.2f, 3f) ?: 1f,
+            (settings["personX"] as? Number)?.toFloat()?.coerceIn(-1f, 1f) ?: 0f,
+            (settings["personY"] as? Number)?.toFloat()?.coerceIn(-1f, 1f) ?: 0f,
+        )
+
+        /** Upright rectangle on a dispW x dispH canvas -> the same area in stored orientation. */
+        fun toStored(r: Rect4, dispW: Int, dispH: Int, rotation: Int): Rect4 {
+            val sw = if (rotation % 180 == 0) dispW else dispH
+            val sh = if (rotation % 180 == 0) dispH else dispW
+            return when (rotation) {
+                90 -> Rect4(r.y, sh - (r.x + r.w), r.h, r.w)
+                180 -> Rect4(sw - (r.x + r.w), sh - (r.y + r.h), r.w, r.h)
+                270 -> Rect4(sw - (r.y + r.h), r.x, r.h, r.w)
+                else -> r
+            }
+        }
 
         fun parseAspect(a: String?): Float? {
             if (a == null || a == "original") return null
