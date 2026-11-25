@@ -491,7 +491,8 @@ class HbrEngine {
 
   /// Renders one processed frame at [timeMs] as JPEG bytes, upright, with
   /// the longest side limited to [maxSize] pixels.
-  static Future<Uint8List> previewFrame(
+  /// Returns null when a newer preview request replaced this one.
+  static Future<Uint8List?> previewFrame(
     String path, {
     required int timeMs,
     required Background background,
@@ -507,7 +508,7 @@ class HbrEngine {
       'settings': {...settings.toMap(), ...frame.toMap(), ...captions.toMap()},
       'maxSize': maxSize,
     });
-    return bytes!;
+    return bytes;
   }
 
   /// Exports the full video with the background replaced. Resolution, frame

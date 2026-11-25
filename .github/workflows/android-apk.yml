@@ -82,6 +82,10 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           script: adb logcat -c; (cd app/android && ./gradlew --no-watch-fs :app:connectedReleaseAndroidTest --stacktrace); rc=$?; adb logcat -d > logcat.txt; exit $rc
 
+      - name: No "isn't responding" during the device tests
+        run: |
+          if grep -E "ANR in com\.holistic" logcat.txt; then echo "::error::The app stopped responding during the tests"; exit 1; fi
+
       - name: Show app log when a device test fails
         if: failure()
         run: grep -E "HbrEngine|HbrTest|AndroidRuntime|whisper|MediaMuxer|MPEG4Writer" logcat.txt | tail -200 || true

@@ -34,7 +34,10 @@ class EditorScreen extends StatefulWidget {
 }
 
 class _EditorScreenState extends State<EditorScreen> {
-  late final VideoPlayerController _player;
+  /// Created only when the original is shown, so opening a video does not
+  /// start a second decoder next to the preview (that froze slow phones).
+  VideoPlayerController? _player;
+  bool get _playerReady => _player?.value.isInitialized ?? false;
   _BgKind _kind = _BgKind.color;
   int _color = _swatches.first;
   String? _imagePath;
@@ -57,10 +60,6 @@ class _EditorScreenState extends State<EditorScreen> {
   @override
   void initState() {
     super.initState();
-    _player = VideoPlayerController.file(File(widget.path))
-      ..initialize().then((_) {
-        if (mounted) setState(() {});
-      });
     _timeMs = (widget.info.durationMs * 0.2).round();
     _schedulePreview(immediate: true);
   }
@@ -68,7 +67,7 @@ class _EditorScreenState extends State<EditorScreen> {
   @override
   void dispose() {
     _debounce?.cancel();
-    _player.dispose();
+    _player?.dispose();
     super.dispose();
   }
 
@@ -107,6 +106,7 @@ class _EditorScreenState extends State<EditorScreen> {
           captions: _captions,
         );
         if (!mounted) return;
+        if (bytes == null) continue; // a newer request is on its way
         setState(() {
           _preview = bytes;
           _previewError = null;
@@ -117,6 +117,24 @@ class _EditorScreenState extends State<EditorScreen> {
       }
     } while (_renderAgain && mounted);
     if (mounted) setState(() => _rendering = false);
+  }
+
+  void _setShowOriginal(bool show) {
+    setState(() => _showOriginal = show);
+    if (show && _player == null) {
+      final p = VideoPlayerController.file(File(widget.path));
+      _player = p;
+      p.initialize().then((_) {
+        if (!mounted || _player != p) return;
+        p.seekTo(Duration(milliseconds: _timeMs));
+        setState(() {});
+      });
+    } else if (!show) {
+      // free the decoder while editing the result
+      final p = _player;
+      _player = null;
+      p?.dispose();
+    }
   }
 
   Future<void> _pickImage() async {
@@ -142,7 +160,7 @@ class _EditorScreenState extends State<EditorScreen> {
   Future<void> _export() async {
     if (_kind == _BgKind.image && _imagePath == null) return _pickImage();
     if (_kind == _BgKind.video && _videoPath == null) return _pickVideo();
-    _player.pause();
+    _player?.pause();
     await showModalBottomSheet<void>(
       context: context,
       isDismissible: false,
@@ -191,8 +209,8 @@ class _EditorScreenState extends State<EditorScreen> {
                   max: info.durationMs.toDouble().clamp(1, double.infinity),
                   onChanged: (v) {
                     setState(() => _timeMs = v.round());
-                    if (_player.value.isInitialized) {
-                      _player.seekTo(Duration(milliseconds: _timeMs));
+                    if (_playerReady) {
+                      _player!.seekTo(Duration(milliseconds: _timeMs));
                     }
                     _schedulePreview();
                   },
@@ -205,7 +223,7 @@ class _EditorScreenState extends State<EditorScreen> {
                   ButtonSegment(value: true, label: Text('Original')),
                 ],
                 selected: {_showOriginal},
-                onSelectionChanged: (s) => setState(() => _showOriginal = s.first),
+                onSelectionChanged: (s) => _setShowOriginal(s.first),
               ),
             ]),
             Text(
@@ -253,7 +271,7 @@ class _EditorScreenState extends State<EditorScreen> {
               },
               onSeek: (ms) {
                 setState(() => _timeMs = ms);
-                if (_player.value.isInitialized) _player.seekTo(Duration(milliseconds: ms));
+                if (_playerReady) _player!.seekTo(Duration(milliseconds: ms));
                 _schedulePreview(immediate: true);
               },
             ),
@@ -528,11 +546,11 @@ class _EditorScreenState extends State<EditorScreen> {
     final aspect = _showOriginal ? info.aspectRatio : fw / fh;
     Widget child;
     if (_showOriginal) {
-      child = _player.value.isInitialized
+      child = _playerReady
           ? GestureDetector(
               onTap: () => setState(() =>
-                  _player.value.isPlaying ? _player.pause() : _player.play()),
-              child: VideoPlayer(_player),
+                  _player!.value.isPlaying ? _player!.pause() : _player!.play()),
+              child: VideoPlayer(_player!),
             )
           : const Center(child: CircularProgressIndicator());
     } else if (_preview != null) {

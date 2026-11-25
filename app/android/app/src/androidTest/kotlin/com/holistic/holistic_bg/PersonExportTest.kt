@@ -76,6 +76,58 @@ class PersonExportTest {
         )
     }
 
+    /**
+     * Guards against "isn't responding": previews with a large photo as the
+     * background must never hold up the main thread, and changing only the
+     * background must be quick (frame and person mask are reused).
+     */
+    @Test(timeout = 300_000)
+    fun previewNeverFreezesTheScreen() {
+        val input = asset("person.mp4")
+        val big = Bitmap.createBitmap(4000, 3000, Bitmap.Config.ARGB_8888).apply { eraseColor(GREEN) }
+        val photo = File(app.cacheDir, "big_bg.jpg")
+        photo.outputStream().use { big.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+        big.recycle()
+
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+        val worst = java.util.concurrent.atomic.AtomicLong()
+        val running = java.util.concurrent.atomic.AtomicBoolean(true)
+        val probe = Thread {
+            while (running.get()) {
+                val sent = System.nanoTime()
+                val done = java.util.concurrent.CountDownLatch(1)
+                main.post { done.countDown() }
+                done.await(30, java.util.concurrent.TimeUnit.SECONDS)
+                worst.set(maxOf(worst.get(), (System.nanoTime() - sent) / 1_000_000))
+                Thread.sleep(50)
+            }
+        }.apply { start() }
+
+        val times = ArrayList<Long>()
+        com.holistic.hbr_engine.Previewer(app).use { p ->
+            val backgrounds = listOf(
+                mapOf("type" to "color", "argb" to GREEN),
+                mapOf("type" to "image", "path" to photo.path),
+                mapOf("type" to "image", "path" to photo.path, "scale" to 0.7, "panX" to 0.5, "fill" to GREEN),
+                mapOf("type" to "color", "argb" to 0xFF0047BB.toInt()),
+                mapOf("type" to "blur", "amount" to 0.03),
+                mapOf("type" to "image", "path" to photo.path, "scale" to 1.4),
+            )
+            for (bg in backgrounds) {
+                val t0 = System.nanoTime()
+                val jpeg = p.render(input.path, 1000, bg, mapOf("aspect" to "9:16"), 960)
+                times += (System.nanoTime() - t0) / 1_000_000
+                assertTrue("empty preview", jpeg.size > 1000)
+            }
+        }
+        running.set(false)
+        probe.join()
+        android.util.Log.i("HbrTest", "preview ms: $times, worst main-thread delay ${worst.get()} ms")
+        assertTrue("main thread blocked for ${worst.get()} ms during previews", worst.get() < 1000)
+        val later = times.drop(1)
+        assertTrue("background-only changes are slow: $times", later.average() < maxOf(2500.0, times[0] * 0.9))
+    }
+
     @Test(timeout = 240_000)
     fun musicIsMixedWithTheVoice() {
         val input = asset("person.mp4")

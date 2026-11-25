@@ -18,7 +18,15 @@ class HbrEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventCha
     private lateinit var context: Context
     private val main = Handler(Looper.getMainLooper())
     private val exportExecutor = Executors.newSingleThreadExecutor()
-    private val previewExecutor = Executors.newSingleThreadExecutor()
+    // Preview work runs at background priority so the screen always stays responsive.
+    private val previewExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread({
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            r.run()
+        }, "hbr-preview")
+    }
+    /** Only the newest preview request is rendered; older queued ones are skipped. */
+    private val previewGen = java.util.concurrent.atomic.AtomicLong()
     private val speechExecutor = Executors.newSingleThreadExecutor()
     private val speechCancel = AtomicBoolean(false)
     private var transcriber: Transcriber? = null
@@ -85,7 +93,13 @@ class HbrEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventCha
                     .fold({ m -> main.post { result.success(m) } },
                         { e -> main.post { result.error("probe_failed", e.message, null) } })
             }
-            "preview" -> previewExecutor.execute {
+            "preview" -> {
+              val gen = previewGen.incrementAndGet()
+              previewExecutor.execute {
+                if (gen != previewGen.get()) {
+                    main.post { result.success(null) } // superseded by a newer request
+                    return@execute
+                }
                 runCatching {
                     val p = previewer ?: Previewer(context).also { previewer = it }
                     p.render(
@@ -100,6 +114,7 @@ class HbrEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventCha
                         Log.e("HbrEngine", "preview failed", e)
                         main.post { result.error("preview_failed", e.message, null) }
                     })
+              }
             }
             "export" -> {
                 val jobId = call.argument<String>("jobId")!!
