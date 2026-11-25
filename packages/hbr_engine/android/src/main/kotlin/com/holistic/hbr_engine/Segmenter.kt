@@ -107,27 +107,46 @@ class Segmenter(
     override fun close() = segmenter.close()
 
     private companion object {
+        fun loadModel(context: Context, name: String): ByteBuffer {
+            val bytes = context.assets.open(name).use { it.readBytes() }
+            return ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder()).apply {
+                put(bytes)
+                rewind()
+            }
+        }
+
         fun create(context: Context, landscape: Boolean, video: Boolean): ImageSegmenter {
             val model = if (landscape) "selfie_segmenter_landscape.tflite" else "selfie_segmenter.tflite"
             val mode = if (video) RunningMode.VIDEO else RunningMode.IMAGE
             // CPU (XNNPACK) first: the model is tiny (256 px), so it is fast,
             // and it gives identical results on every phone. Some mobile GPU
             // drivers return empty masks for this model.
+            var lastError: Throwable? = null
+            // Try the bundled model by asset path, then from memory, on each delegate.
             for (delegate in listOf(Delegate.CPU, Delegate.GPU)) {
-                try {
-                    val base = BaseOptions.builder().setModelAssetPath(model).setDelegate(delegate).build()
-                    val opts = ImageSegmenter.ImageSegmenterOptions.builder()
-                        .setBaseOptions(base)
-                        .setRunningMode(mode)
-                        .setOutputConfidenceMasks(true)
-                        .setOutputCategoryMask(false)
-                        .build()
-                    return ImageSegmenter.createFromOptions(context, opts)
-                } catch (e: Exception) {
-                    Log.w("HbrEngine", "Segmenter with $delegate failed, trying next", e)
+                for (fromMemory in listOf(false, true)) {
+                    try {
+                        val base = BaseOptions.builder().setDelegate(delegate).apply {
+                            if (fromMemory) setModelAssetBuffer(loadModel(context, model))
+                            else setModelAssetPath(model)
+                        }.build()
+                        val opts = ImageSegmenter.ImageSegmenterOptions.builder()
+                            .setBaseOptions(base)
+                            .setRunningMode(mode)
+                            .setOutputConfidenceMasks(true)
+                            .setOutputCategoryMask(false)
+                            .build()
+                        return ImageSegmenter.createFromOptions(context, opts)
+                    } catch (e: Throwable) {
+                        lastError = e
+                        Log.w("HbrEngine", "Segmenter ($delegate, fromMemory=$fromMemory) failed, trying next", e)
+                    }
                 }
             }
-            throw IllegalStateException("Could not start person segmentation")
+            throw IllegalStateException(
+                "Could not start person segmentation: ${lastError?.message ?: lastError?.javaClass?.simpleName}",
+                lastError,
+            )
         }
     }
 }
