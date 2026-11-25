@@ -11,6 +11,16 @@ import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
 import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
 import { Engine, loadCore, matrixOf, i420Size } from './engine.js';
 
+const models = {};
+async function modelBuffer(landscape) {
+  const key = landscape ? 'LANDSCAPE' : 'SQUARE';
+  if (!models[key]) {
+    const m = await import('./models.js');
+    models[key] = Uint8Array.from(atob(m[key]), (c) => c.charCodeAt(0));
+  }
+  return models[key];
+}
+
 const BASE = new URL('.', import.meta.url).href;
 let filesetPromise;
 const segmenters = new Map();
@@ -20,12 +30,12 @@ async function segmenter(mode, landscape) {
   if (segmenters.has(key)) return segmenters.get(key);
   filesetPromise ??= FilesetResolver.forVisionTasks(BASE + 'vendor');
   const fileset = await filesetPromise;
-  const model = BASE + `models/${landscape ? 'selfie_segmenter_landscape' : 'selfie_segmenter'}.tflite`;
+  const model = await modelBuffer(landscape);
   let seg;
   for (const delegate of ['GPU', 'CPU']) {
     try {
       seg = await ImageSegmenter.createFromOptions(fileset, {
-        baseOptions: { modelAssetPath: model, delegate },
+        baseOptions: { modelAssetBuffer: model, delegate },
         runningMode: mode,
         outputConfidenceMasks: true,
         outputCategoryMask: false,
@@ -100,6 +110,14 @@ export async function demux(file) {
     videoSamples: vs,
     audio: at ? audioInfo(mp4, at, samples[at.id]) : null,
   };
+  const decCodec = meta.codec.startsWith('hev1') ? meta.codec.replace('hev1', 'hvc1') : meta.codec;
+  const support = await VideoDecoder.isConfigSupported({
+    codec: decCodec, codedWidth: meta.width, codedHeight: meta.height, description: meta.description,
+  }).catch(() => ({ supported: false }));
+  if (!support.supported) {
+    const name = /^(hvc1|hev1)/.test(meta.codec) ? 'HEVC (H.265)' : meta.codec;
+    throw new Error(`This browser can't decode ${name} video. Try Safari or Chrome/Edge on a computer with hardware ${name} support, or export the clip as H.264.`);
+  }
   meta.displayWidth = rot % 180 ? meta.height : meta.width;
   meta.displayHeight = rot % 180 ? meta.width : meta.height;
   return meta;
