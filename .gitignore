@@ -1,0 +1,11 @@
+build/
+.dart_tool/
+.idea/
+*.iml
+.DS_Store
+**/Pods/
+**/.symlinks/
+local.properties
+.cxx/
+.gradle/
+__pycache__/

@@ -1,0 +1,4 @@
+module HbrCore {
+  header "hbr/hbr_core.h"
+  export *
+}
