@@ -330,10 +330,15 @@ class AudioCopier(path: String, trackIndex: Int) : AutoCloseable {
     fun copyUntil(muxer: MediaMuxer, ptsUs: Long) {
         if (track < 0) return
         while (!done) {
-            val t = extractor.sampleTime
-            if (t < 0) {
+            if (extractor.sampleTrackIndex < 0) {
                 done = true
                 return
+            }
+            val t = extractor.sampleTime
+            if (t < 0) {
+                // encoder priming before time zero (edit list): not audible, skip it
+                extractor.advance()
+                continue
             }
             if (t > ptsUs) return
             buffer.clear()
