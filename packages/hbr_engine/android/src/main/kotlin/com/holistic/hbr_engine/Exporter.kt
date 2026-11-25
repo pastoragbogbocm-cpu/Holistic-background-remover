@@ -13,6 +13,9 @@ import java.io.File
 import java.nio.ByteBuffer
 import kotlin.math.roundToInt
 
+/** How long a codec may go without making progress before we give up. */
+private const val STALL_NS = 15_000_000_000L
+
 class ExportCancelled : Exception("cancelled")
 
 class NoPersonFound : Exception(
@@ -90,12 +93,7 @@ class Exporter(
                             engine.refine(decoder.frame, mask.buffer, mask.width, mask.height, meta.rotation)
                             val bgFrame = bg.next()
 
-                            var inIdx: Int
-                            while (true) {
-                                inIdx = enc.dequeueInputBuffer(10_000)
-                                if (inIdx >= 0) break
-                                drain(enc, false)
-                            }
+                            val inIdx = dequeueInput(enc)
                             val img = enc.getInputImage(inIdx) ?: error("Encoder has no image input")
                             val p = img.planes
                             engine.composite(
@@ -112,12 +110,7 @@ class Exporter(
                             }
                         }
                         // end of stream
-                        var inIdx: Int
-                        while (true) {
-                            inIdx = enc.dequeueInputBuffer(10_000)
-                            if (inIdx >= 0) break
-                            drain(enc, false)
-                        }
+                        val inIdx = dequeueInput(enc)
                         enc.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         drain(enc, true)
                         check(muxerStarted && frames > 0) { "No frames were encoded" }
@@ -147,11 +140,30 @@ class Exporter(
         }
     }
 
+    private fun dequeueInput(enc: MediaCodec): Int {
+        val start = System.nanoTime()
+        while (true) {
+            val idx = enc.dequeueInputBuffer(10_000)
+            if (idx >= 0) return idx
+            drain(enc, false)
+            check(System.nanoTime() - start < STALL_NS) { "The video encoder stopped responding" }
+        }
+    }
+
     private fun drain(enc: MediaCodec, endOfStream: Boolean) {
+        var idleSince = System.nanoTime()
         while (true) {
             val idx = enc.dequeueOutputBuffer(info, if (endOfStream) 10_000 else 0)
+            if (idx != MediaCodec.INFO_TRY_AGAIN_LATER) idleSince = System.nanoTime()
             when {
-                idx == MediaCodec.INFO_TRY_AGAIN_LATER -> if (!endOfStream) return
+                idx == MediaCodec.INFO_TRY_AGAIN_LATER -> {
+                    if (!endOfStream) return
+                    // Some encoders never flag the last buffer; don't wait forever.
+                    if (System.nanoTime() - idleSince > STALL_NS) {
+                        Log.w("HbrEngine", "Encoder did not signal end of stream; finishing")
+                        return
+                    }
+                }
                 idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     val mux = muxer!!
                     check(!muxerStarted) { "Encoder format changed twice" }

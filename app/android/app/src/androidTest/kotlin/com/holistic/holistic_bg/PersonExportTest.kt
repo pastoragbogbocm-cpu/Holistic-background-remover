@@ -33,7 +33,7 @@ class PersonExportTest {
         return f
     }
 
-    @Test
+    @Test(timeout = 240_000)
     fun segmenterFindsThePerson() {
         val bmp = testAssets.open("portrait.jpg").use { BitmapFactory.decodeStream(it) }
         Segmenter(app, landscape = false, video = false).use { seg ->
@@ -42,13 +42,13 @@ class PersonExportTest {
         }
     }
 
-    @Test
+    @Test(timeout = 240_000)
     fun exportKeepsPersonInFrontOfColor() = checkExport("person.mp4", mapOf("type" to "color", "argb" to GREEN))
 
-    @Test
+    @Test(timeout = 240_000)
     fun exportKeepsPersonInPhoneVideo() = checkExport("person_rot90.mp4", mapOf("type" to "color", "argb" to GREEN))
 
-    @Test
+    @Test(timeout = 240_000)
     fun exportKeepsPersonInFrontOfImage() {
         // A plain green picture as the chosen background image.
         val bg = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888).apply { eraseColor(GREEN) }

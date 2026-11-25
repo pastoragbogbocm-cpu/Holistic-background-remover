@@ -50,7 +50,9 @@ class FrameDecoder(path: String, private val loop: Boolean = false) : AutoClosea
 
     /** Decodes the next frame into [frame]. Returns false at end of stream. */
     fun next(): Boolean {
+        val start = System.nanoTime()
         while (true) {
+            check(System.nanoTime() - start < 15_000_000_000L) { "The video decoder stopped responding" }
             if (outputEos) {
                 if (!loop || framesInPass == 0) return false
                 restart()

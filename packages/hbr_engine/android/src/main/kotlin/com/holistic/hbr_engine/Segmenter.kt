@@ -107,6 +107,17 @@ class Segmenter(
     override fun close() = segmenter.close()
 
     private companion object {
+        /** Whole cause chain, e.g. "ExceptionInInitializerError <- NoSuchMethodError: ...". */
+        fun describe(e: Throwable?): String {
+            val parts = mutableListOf<String>()
+            var t = e
+            while (t != null && parts.size < 5) {
+                parts += t.javaClass.simpleName + (t.message?.let { ": $it" } ?: "")
+                t = t.cause
+            }
+            return parts.joinToString(" <- ").ifEmpty { "unknown error" }
+        }
+
         fun loadModel(context: Context, name: String): ByteBuffer {
             val bytes = context.assets.open(name).use { it.readBytes() }
             return ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder()).apply {
@@ -121,7 +132,7 @@ class Segmenter(
             // CPU (XNNPACK) first: the model is tiny (256 px), so it is fast,
             // and it gives identical results on every phone. Some mobile GPU
             // drivers return empty masks for this model.
-            var lastError: Throwable? = null
+            var firstError: Throwable? = null
             // Try the bundled model by asset path, then from memory, on each delegate.
             for (delegate in listOf(Delegate.CPU, Delegate.GPU)) {
                 for (fromMemory in listOf(false, true)) {
@@ -138,15 +149,12 @@ class Segmenter(
                             .build()
                         return ImageSegmenter.createFromOptions(context, opts)
                     } catch (e: Throwable) {
-                        lastError = e
+                        if (firstError == null) firstError = e
                         Log.w("HbrEngine", "Segmenter ($delegate, fromMemory=$fromMemory) failed, trying next", e)
                     }
                 }
             }
-            throw IllegalStateException(
-                "Could not start person segmentation: ${lastError?.message ?: lastError?.javaClass?.simpleName}",
-                lastError,
-            )
+            throw IllegalStateException("Could not start person segmentation: ${describe(firstError)}", firstError)
         }
     }
 }

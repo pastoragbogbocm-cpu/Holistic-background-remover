@@ -49,27 +49,13 @@ jobs:
             'Lcom/google/mediapipe/tasks/vision/imagesegmenter/ImageSegmenter;' \
             'Lcom/google/mediapipe/framework/image/MPImage;' \
             'Lcom/google/mediapipe/framework/image/ByteBufferExtractor;' \
+            'Lcom/google/common/flogger/backend/system/DefaultPlatform;' \
             'Lcom/holistic/hbr_engine/Segmenter;'; do
             if ! strings "$dex" | grep -qF "$cls"; then
               echo "::error::$cls was stripped or renamed by R8; person segmentation would return empty masks"
               exit 1
             fi
           done
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: holistic-bg-apk
-          path: app/build/app/outputs/flutter-apk/app-release.apk
-
-      - name: Publish APK as the latest release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cp app/build/app/outputs/flutter-apk/app-release.apk holistic-background-remover.apk
-          gh release delete latest --yes --cleanup-tag || true
-          gh release create latest holistic-background-remover.apk \
-            --title "Holistic Background Remover (latest build)" \
-            --notes "Built from ${GITHUB_SHA::7}. Download holistic-background-remover.apk on your Android phone and open it to install."
 
       - name: Make test clips
         run: |
@@ -91,13 +77,29 @@ jobs:
           target: google_apis
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
-          script: cd app/android && ./gradlew :app:connectedReleaseAndroidTest --stacktrace
+          script: adb logcat -c; (cd app/android && ./gradlew :app:connectedReleaseAndroidTest --stacktrace); rc=$?; adb logcat -d > logcat.txt; exit $rc
 
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: device-test-report
-          path: app/build/app/reports/androidTests/
+          path: |
+            app/build/app/reports/androidTests/
+            logcat.txt
           if-no-files-found: ignore
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: holistic-bg-apk
+          path: app/build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Publish APK as the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/app/outputs/flutter-apk/app-release.apk holistic-background-remover.apk
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest holistic-background-remover.apk \
+            --title "Holistic Background Remover (latest build)" \
+            --notes "Built from ${GITHUB_SHA::7} and tested on an Android emulator (person kept in front of the new background). Download holistic-background-remover.apk on your Android phone and open it to install."

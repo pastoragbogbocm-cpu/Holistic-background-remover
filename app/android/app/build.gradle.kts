@@ -38,6 +38,11 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+            // No R8 shrinking/obfuscation: MediaPipe looks up Java classes from
+            // native code and through reflection (protobuf, Flogger), which R8
+            // breaks. The size saving is small next to the bundled models.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }
