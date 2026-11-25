@@ -2,35 +2,43 @@
 // Nothing leaves the device. One job per worker; the page terminates it to cancel.
 import createSpeech from './hbr_speech.js';
 
-const MODEL = 'models/ggml-tiny-q5_1.bin';
+// Bundled in the offline app; a hosted copy may leave it out (the page then
+// lets the person choose the file and passes it in).
+const MODEL_PARTS = ['models/ggml-tiny-q5_1.bin'];
 const post = (m) => self.postMessage(m);
 
 async function fetchModel() {
-  const res = await fetch(new URL(MODEL, self.location.href));
-  if (!res.ok) throw new Error('The speech model is missing from this app.');
-  const total = +res.headers.get('content-length') || 0;
-  if (!res.body || !total) return new Uint8Array(await res.arrayBuffer());
-  const buf = new Uint8Array(total);
-  const reader = res.body.getReader();
+  const res = await Promise.all(MODEL_PARTS.map((p) => fetch(new URL(p, self.location.href))));
+  if (res.some((r) => !r.ok)) throw Object.assign(new Error('The speech model is not included in this copy of the app.'), { code: 'nomodel' });
+  const sizes = res.map((r) => +r.headers.get('content-length') || 0);
+  const known = sizes.every((n) => n > 0);
+  const total = sizes.reduce((a, b) => a + b, 0);
+  const chunks = [];
   let got = 0, last = -1;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf.set(value, got);
-    got += value.length;
-    const pct = Math.floor((got / total) * 100);
-    if (pct !== last) post({ type: 'progress', stage: 'model', pct: (last = pct) });
+  for (const r of res) {
+    const reader = r.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      got += value.length;
+      const pct = known ? Math.min(100, Math.floor((got / total) * 100)) : 0;
+      if (pct !== last) post({ type: 'progress', stage: 'model', pct: (last = pct) });
+    }
   }
-  return got === total ? buf : buf.subarray(0, got);
+  const buf = new Uint8Array(got);
+  let o = 0;
+  for (const c of chunks) { buf.set(c, o); o += c.length; }
+  return buf;
 }
 
 self.onmessage = async ({ data }) => {
   try {
-    const { pcm, language } = data;
+    const { pcm, language, model: given } = data;
     post({ type: 'progress', stage: 'model', pct: 0 });
     const [M, model] = await Promise.all([
       createSpeech({ locateFile: (p) => new URL(p, import.meta.url).href, print: () => {}, printErr: () => {} }),
-      fetchModel(),
+      given ? new Uint8Array(given) : fetchModel(),
     ]);
     const mp = M._hbrw_salloc(model.length);
     M.HEAPU8.set(model, mp);
@@ -53,6 +61,6 @@ self.onmessage = async ({ data }) => {
     M._hbrw_speech_free(jp);
     post({ type: 'done', words });
   } catch (e) {
-    post({ type: 'error', message: e.message || String(e) });
+    post({ type: 'error', message: e.message || String(e), code: e.code });
   }
 };

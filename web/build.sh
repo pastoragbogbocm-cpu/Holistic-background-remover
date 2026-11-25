@@ -20,6 +20,7 @@ cp src/hbr_speech.js src/hbr_speech.wasm dist/
 mkdir -p dist/models
 MODEL=${SPEECH_MODEL:-../third_party/models/ggml-tiny-q5_1.bin}
 [ -f "$MODEL" ] || MODEL=/tmp/speech/ggml-tiny-q5_1.bin
+rm -f dist/models/ggml-tiny-q5_1.bin*
 cp "$MODEL" dist/models/ggml-tiny-q5_1.bin
 cp node_modules/@mediapipe/tasks-vision/wasm/vision_wasm_internal.{js,wasm} dist/vendor/
 cp src/index.html src/sw.js src/manifest.webmanifest dist/

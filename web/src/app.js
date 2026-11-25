@@ -239,7 +239,7 @@ $('capGo').onclick = async () => {
   const label = { audio: 'Reading the sound…', model: 'Loading the speech model', listen: 'Listening' };
   try {
     const words = await transcribe(state.file, $('capLang').value, {
-      signal: state.capAbort.signal,
+      signal: state.capAbort.signal, model: state.speechModel,
       onProgress: (stage, pct) => {
         const total = stage === 'audio' ? 0 : stage === 'model' ? pct * 0.1 : 10 + pct * 0.9;
         $('capBar').value = total;
@@ -254,13 +254,28 @@ $('capGo').onclick = async () => {
     drawCueList();
     if (state.cues.length) $('time').dispatchEvent(new Event('input'));
   } catch (e) {
-    if (e.name !== 'AbortError') setErr('Captions failed: ' + (e.message || e));
+    if (e.code === 'nomodel') $('capModel').classList.remove('hidden');
+    else if (e.name !== 'AbortError') setErr('Captions failed: ' + (e.message || e));
   } finally {
     state.capAbort = null;
     $('capProg').classList.add('hidden');
     drawCaptions();
     schedule(true);
   }
+};
+$('capModelPick').onclick = () => $('capModelFile').click();
+$('capModelFile').onchange = async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const buf = await f.arrayBuffer();
+  const head = new TextDecoder().decode(new Uint8Array(buf, 0, 4));
+  if (buf.byteLength < 1e6 || !['lmgg', 'ggml', 'ggjt', 'ggla'].includes(head)) {
+    setErr('That file is not a speech model. Choose ggml-tiny-q5_1.bin.');
+    return;
+  }
+  state.speechModel = buf;
+  $('capModel').classList.add('hidden');
+  $('capGo').click();
 };
 drawCaptions();
 

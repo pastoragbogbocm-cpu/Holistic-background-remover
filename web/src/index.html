@@ -178,6 +178,11 @@ footer{color:var(--mute);font-size:13px;padding:8px max(3vw,16px) 28px;max-width
         <select id="capLang" aria-label="Spoken language"></select>
         <button class="btn" id="capGo">Generate captions</button>
       </div>
+      <div id="capModel" class="hidden" style="margin-top:12px">
+        <p class="small" style="margin:0 0 8px">This copy of the app doesn't include the speech model. Choose the file <b>ggml-tiny-q5_1.bin</b> (it's in the offline download, in the models folder). It is only read on this device.</p>
+        <button class="btn" id="capModelPick">Choose speech model</button>
+        <input type="file" id="capModelFile" accept=".bin" class="hidden">
+      </div>
       <div id="capProg" class="hidden" style="margin-top:12px">
         <progress id="capBar" max="100" value="0"></progress>
         <div class="row2" style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span class="small" id="capText">Starting…</span><button class="btn" id="capCancel">Cancel</button></div>

@@ -64,7 +64,7 @@ async function speechPcm(file) {
  * Words spoken in the video: [{w, t0, t1}] in ms. Runs fully on this device.
  * onProgress(stage, pct) with stage 'audio' | 'model' | 'listen'.
  */
-export async function transcribe(file, language, { onProgress, signal } = {}) {
+export async function transcribe(file, language, { onProgress, signal, model } = {}) {
   onProgress?.('audio', 0);
   let pcm;
   try { pcm = await speechPcm(file); } catch { throw new Error('This video has no sound that can be read.'); }
@@ -78,9 +78,10 @@ export async function transcribe(file, language, { onProgress, signal } = {}) {
       worker.onmessage = ({ data }) => {
         if (data.type === 'progress') onProgress?.(data.stage, data.pct);
         else if (data.type === 'done') resolve(data.words);
-        else if (data.type === 'error') reject(new Error(data.message));
+        else if (data.type === 'error') reject(Object.assign(new Error(data.message), { code: data.code }));
       };
-      worker.postMessage({ pcm, language }, [pcm.buffer]);
+      const m = model ? model.slice(0) : undefined; // keep the original for the next run
+      worker.postMessage({ pcm, language, model: m }, m ? [pcm.buffer, m] : [pcm.buffer]);
     });
   } finally {
     worker.terminate(); // also how cancel stops the work
