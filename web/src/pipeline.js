@@ -33,7 +33,8 @@ async function segmenter(mode, landscape) {
   const fileset = await filesetPromise;
   const model = await modelBuffer(landscape);
   let seg;
-  for (const delegate of ['GPU', 'CPU']) {
+  // CPU first: some phone GPUs return empty masks in the browser (the person then vanishes).
+  for (const delegate of ['CPU', 'GPU']) {
     try {
       seg = await ImageSegmenter.createFromOptions(fileset, {
         baseOptions: { modelAssetBuffer: model, delegate },
@@ -176,12 +177,40 @@ export async function loadImageBitmap(file) {
   return createImageBitmap(file, { imageOrientation: 'from-image' });
 }
 
-function seek(video, t) {
-  return new Promise((resolve) => {
-    if (Math.abs(video.currentTime - t) < 1e-3 && video.readyState >= 2) return resolve();
-    video.addEventListener('seeked', () => resolve(), { once: true });
-    video.currentTime = t;
-  });
+/** Seeks and waits until the frame is really decoded (phones may report "seeked" before that). */
+async function seek(video, t) {
+  if (!(Math.abs(video.currentTime - t) < 1e-3 && video.readyState >= 2)) {
+    await new Promise((resolve) => {
+      video.addEventListener('seeked', () => resolve(), { once: true });
+      video.currentTime = t;
+    });
+  }
+  if (video.requestVideoFrameCallback && video.readyState < 2) {
+    await new Promise((resolve) => {
+      const id = video.requestVideoFrameCallback(() => resolve());
+      setTimeout(() => { video.cancelVideoFrameCallback?.(id); resolve(); }, 400);
+    });
+  }
+}
+
+/** True when a drawn frame is empty (one flat colour), i.e. the browser gave no picture. */
+function isBlank(img) {
+  const d = img.data;
+  let lo = 255, hi = 0;
+  const step = Math.max(4, Math.floor(d.length / 4 / 2000) * 4);
+  for (let i = 0; i < d.length; i += step) {
+    const v = (d[i] + d[i + 1] + d[i + 2]) / 3;
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+    if (hi - lo > 6) return false;
+  }
+  return true;
+}
+
+/** Plays a moment so mobile browsers start decoding pictures for this element. */
+async function wake(video) {
+  try { await video.play(); await new Promise((r) => setTimeout(r, 120)); } catch { /* autoplay blocked */ }
+  video.pause();
 }
 
 export function videoElement(url) {
@@ -190,8 +219,12 @@ export function videoElement(url) {
     v.muted = true;
     v.playsInline = true;
     v.preload = 'auto';
+    v.setAttribute('playsinline', '');
+    // kept in the page (invisible): phones don't decode pictures for detached videos
+    v.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none';
+    document.body.append(v);
     v.src = url;
-    v.addEventListener('loadeddata', () => resolve(v), { once: true });
+    v.addEventListener('loadeddata', async () => { await wake(v); resolve(v); }, { once: true });
     v.addEventListener('error', () => reject(new Error('Cannot read video')), { once: true });
   });
 }
@@ -306,7 +339,15 @@ export async function renderPreview({ videoEl, canvas, timeS, bg, settings, land
   const c = new OffscreenCanvas(w, h);
   const ctx = c.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(videoEl, 0, 0, w, h);
-  const rgba = ctx.getImageData(0, 0, w, h);
+  let rgba = ctx.getImageData(0, 0, w, h);
+  for (let tries = 0; tries < 2 && isBlank(rgba); tries++) {
+    // the browser gave an empty picture: wake the decoder and read again
+    await wake(videoEl);
+    await seek(videoEl, timeS + (tries + 1) * 1e-3);
+    ctx.drawImage(videoEl, 0, 0, w, h);
+    rgba = ctx.getImageData(0, 0, w, h);
+  }
+  if (isBlank(rgba)) throw new Error('This browser did not give a picture for this moment of the video. Try another moment, or export directly.');
   const eng = new Engine(M, w, h, { temporal: 0, ...settings });
   try {
     eng.rgbaToI420(rgba, eng.src, w, h, 1, true);
