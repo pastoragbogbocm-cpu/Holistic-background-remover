@@ -102,4 +102,32 @@ EMSCRIPTEN_KEEPALIVE int hbrw_rgb_to_yuv(int r, int g, int b, int matrix, int fu
   hbr_rgb_to_yuv(r, g, b, static_cast<hbr_matrix>(matrix), full, &y, &u, &v);
   return (y << 16) | (u << 8) | v;
 }
+
+// ---- layout: frame sizes and background placement ----
+EMSCRIPTEN_KEEPALIVE void hbrw_place_rect(int iw, int ih, int cw, int ch, int fit, float scale,
+                                          float px, float py, int* out4) {
+  hbr_place_rect(iw, ih, cw, ch, fit, scale, px, py, &out4[0], &out4[1], &out4[2], &out4[3]);
+}
+
+EMSCRIPTEN_KEEPALIVE int hbrw_blit_i420(uint8_t* src, int sw, int sh, uint8_t* dst, int dw, int dh,
+                                        int rx, int ry, int rw, int rh) {
+  hbr_yuv s = i420(src, sw, sh), d = i420(dst, dw, dh);
+  return hbr_blit_yuv(&s, sw, sh, &d, dw, dh, rx, ry, rw, rh);
+}
+
+EMSCRIPTEN_KEEPALIVE int hbrw_crop_i420(uint8_t* src, int sw, int sh, int rx, int ry, int rw, int rh,
+                                        uint8_t* dst, int dw, int dh) {
+  hbr_yuv s = i420(src, sw, sh), d = i420(dst, dw, dh);
+  return hbr_crop_yuv(&s, sw, sh, rx, ry, rw, rh, &d, dw, dh);
+}
+
+EMSCRIPTEN_KEEPALIVE int hbrw_fill_i420(uint8_t* dst, int w, int h, int yuv) {
+  hbr_yuv d = i420(dst, w, h);
+  return hbr_fill_yuv(&d, w, h, (yuv >> 16) & 255, (yuv >> 8) & 255, yuv & 255);
+}
+
+EMSCRIPTEN_KEEPALIVE int hbrw_blur_i420(uint8_t* img, int w, int h, float amount) {
+  hbr_yuv d = i420(img, w, h);
+  return hbr_blur_yuv(&d, w, h, amount);
+}
 }

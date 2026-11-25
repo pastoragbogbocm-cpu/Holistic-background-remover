@@ -195,15 +195,66 @@ export function videoElement(url) {
   });
 }
 
-/** Prepares per-frame background provider for an engine. */
-async function backgroundFor(engine, bg, rotation, matrix, full) {
+const isDefaultPlacement = (p) => !p || (p.scale === 1 && !p.panX && !p.panY);
+const cssHex = (argb) => '#' + ((argb >>> 0) & 0xffffff).toString(16).padStart(6, '0');
+
+/** Upright picture at dw x dh with the user's size/position (null = plain cover). */
+async function placedPicture(engine, source, dw, dh, placement, maxSide) {
+  if (isDefaultPlacement(placement)) return pictureData(source, maxSide);
+  const sw = source.videoWidth || source.width;
+  const sh = source.videoHeight || source.height;
+  const r = engine.placeRect(sw, sh, dw, dh, false, placement.scale, placement.panX || 0, placement.panY || 0);
+  const c = new OffscreenCanvas(dw, dh);
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = cssHex(placement.fill ?? 0xff000000);
+  ctx.fillRect(0, 0, dw, dh);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(source, r.x, r.y, r.w, r.h);
+  return ctx.getImageData(0, 0, dw, dh);
+}
+
+const even = (v) => Math.max(2, Math.round(v / 2) * 2);
+function parseAspect(a) {
+  if (!a || a === 'original') return null;
+  const [x, y] = a.split(':').map(Number);
+  return x > 0 && y > 0 ? x / y : null;
+}
+
+/**
+ * Output canvas for a source stored at W x H with a clockwise display
+ * rotation. CW x CH is in stored orientation (the rotation tag is kept);
+ * rect is where the source video sits on it.
+ */
+export function layoutFor(engine, W, H, rot, aspect, fit) {
+  const side = rot % 180 !== 0;
+  const dW = side ? H : W, dH = side ? W : H;
+  const r = parseAspect(aspect);
+  let cw = dW, ch = dH;
+  if (r) {
+    const short = Math.min(dW, dH);
+    if (r >= 1) { ch = short; cw = even(short * r); } else { cw = short; ch = even(short / r); }
+  }
+  const CW = side ? ch : cw, CH = side ? cw : ch;
+  const identity = CW === W && CH === H;
+  const rect = identity ? { x: 0, y: 0, w: W, h: H } : engine.placeRect(W, H, CW, CH, fit);
+  return { CW, CH, dispW: cw, dispH: ch, rect, identity, W, H };
+}
+
+/**
+ * Per-frame background provider. Pictures are written into `target`
+ * (engine.bg for the source-shaped frame, else the canvas buffer).
+ */
+async function backgroundFor(engine, bg, rotation, matrix, full, L, target) {
+  const tw = L.CW, th = L.CH;
+  const put = (img) => engine.setBackgroundPicture(img, rotation, matrix, full, target, tw, th);
+  const dispW = L.dispW, dispH = L.dispH;
   switch (bg.type) {
     case 'color':
       return async () => ({ mode: 0, color: engine.yuvColor(bg.argb, matrix, full) });
     case 'blur':
       return async () => ({ mode: 2, blur: bg.amount });
     case 'image': {
-      engine.setBackgroundPicture(await pictureData(bg.bitmap), rotation, matrix, full);
+      put(await placedPicture(engine, bg.bitmap, dispW, dispH, bg.placement, 4096));
       return async () => ({ mode: 1 });
     }
     case 'video': {
@@ -211,7 +262,7 @@ async function backgroundFor(engine, bg, rotation, matrix, full) {
       const dur = v.duration || 1;
       return async (tSec) => {
         await seek(v, tSec % dur);
-        engine.setBackgroundPicture(await pictureData(v, 1920), rotation, matrix, full);
+        put(await placedPicture(engine, v, dispW, dispH, bg.placement, 1920));
         return { mode: 1 };
       };
     }
@@ -219,10 +270,32 @@ async function backgroundFor(engine, bg, rotation, matrix, full) {
   throw new Error('unknown background');
 }
 
+/** Person in front of the background on the output canvas; returns the output buffer. */
+function composeFrame(eng, L, spec, canvasBuf, outBuf) {
+  if (L.identity) {
+    eng.composite(spec);
+    return eng.dst;
+  }
+  const M = eng.M, { W, H, CW, CH } = L;
+  if (spec.mode === 0) M._hbrw_fill_i420(canvasBuf, CW, CH, spec.color);
+  else if (spec.mode === 2) {
+    eng.blit(eng.src, W, H, canvasBuf, CW, CH, eng.placeRect(W, H, CW, CH, false));
+    M._hbrw_blur_i420(canvasBuf, CW, CH, spec.blur * 1.5);
+  }
+  if (spec.mode === 2) eng.composite(spec);
+  else {
+    eng.crop(canvasBuf, CW, CH, L.rect, eng.bg, W, H);
+    eng.composite({ mode: 1 });
+  }
+  eng.blit(canvasBuf, CW, CH, outBuf, CW, CH, { x: 0, y: 0, w: CW, h: CH });
+  eng.blit(eng.dst, W, H, outBuf, CW, CH, L.rect);
+  return outBuf;
+}
+
 // ---------------------------------------------------------------- preview
 
 /** One processed frame, upright, drawn into `canvas`. */
-export async function renderPreview({ videoEl, canvas, timeS, bg, settings, landscape }) {
+export async function renderPreview({ videoEl, canvas, timeS, bg, settings, landscape, frame }) {
   const M = await loadCore();
   await seek(videoEl, timeS);
   const maxSide = 960;
@@ -239,11 +312,22 @@ export async function renderPreview({ videoEl, canvas, timeS, bg, settings, land
     const seg = await segmenter('IMAGE', landscape);
     const mask = personMask(seg.segment(c));
     eng.refine(mask.data, mask.w, mask.h, 0);
-    const next = await backgroundFor(eng, bg, 0, 1, true);
-    eng.composite(await next(timeS));
-    canvas.width = w;
-    canvas.height = h;
-    canvas.getContext('2d').putImageData(eng.outputRgba(1, true), 0, 0);
+    const L = layoutFor(eng, w, h, 0, frame?.aspect, frame?.fit);
+    let canvasBuf = 0, outBuf = 0;
+    if (!L.identity) {
+      canvasBuf = M._hbrw_alloc(i420Size(L.CW, L.CH));
+      outBuf = M._hbrw_alloc(i420Size(L.CW, L.CH));
+    }
+    try {
+      const next = await backgroundFor(eng, bg, 0, 1, true, L, L.identity ? eng.bg : canvasBuf);
+      const out = composeFrame(eng, L, await next(timeS), canvasBuf, outBuf);
+      canvas.width = L.CW;
+      canvas.height = L.CH;
+      canvas.getContext('2d').putImageData(eng.toRgba(out, L.CW, L.CH, 1, true), 0, 0);
+    } finally {
+      if (canvasBuf) M._hbrw_free(canvasBuf);
+      if (outBuf) M._hbrw_free(outBuf);
+    }
   } finally {
     eng.destroy();
   }
@@ -283,20 +367,24 @@ async function pickEncoder(meta, W, H) {
  * Full export. onProgress({fraction, frames, total, fps}). Returns
  * {blob, warnings, encoder}. `signal` cancels.
  */
-export async function exportVideo({ meta, bg, settings, onProgress, signal }) {
+export async function exportVideo({ meta, bg, settings, onProgress, signal, frame }) {
   const M = await loadCore();
   const W = meta.width, H = meta.height, rot = meta.rotation;
   const warnings = [];
   const eng = new Engine(M, W, H, settings);
+  const L = layoutFor(eng, W, H, rot, frame?.aspect, frame?.fit);
+  const CW = L.CW, CH = L.CH;
+  const canvasBuf = L.identity ? 0 : M._hbrw_alloc(i420Size(CW, CH));
+  const outBuf = L.identity ? 0 : M._hbrw_alloc(i420Size(CW, CH));
   const seg = await segmenter('VIDEO', meta.displayWidth > meta.displayHeight);
-  const { config: encConfig, mux } = await pickEncoder(meta, W, H);
+  const { config: encConfig, mux } = await pickEncoder(meta, CW, CH);
 
   const audio = meta.audio;
   const muxAudio = audio && audio.codec && audio.description !== undefined;
   if (audio && !muxAudio) warnings.push('The audio format could not be copied, so it was left out.');
   const muxer = new Muxer({
     target: new ArrayBufferTarget(),
-    video: { codec: mux, width: W, height: H, rotation: rot },
+    video: { codec: mux, width: CW, height: CH, rotation: rot },
     ...(muxAudio ? { audio: { codec: audio.codec, numberOfChannels: audio.channels, sampleRate: audio.sampleRate } } : {}),
     fastStart: 'in-memory',
     firstTimestampBehavior: 'offset',
@@ -336,7 +424,7 @@ export async function exportVideo({ meta, bg, settings, onProgress, signal }) {
         colorSpace = frame.colorSpace?.toJSON?.() ?? null;
         matrix = matrixOf(frame.colorSpace);
         full = !!frame.colorSpace?.fullRange;
-        nextBg = await backgroundFor(eng, bg, rot, matrix, full);
+        nextBg = await backgroundFor(eng, bg, rot, matrix, full, L, L.identity ? eng.bg : canvasBuf);
       }
       const fw = frame.visibleRect?.width ?? frame.displayWidth;
       const fh = frame.visibleRect?.height ?? frame.displayHeight;
@@ -374,11 +462,11 @@ export async function exportVideo({ meta, bg, settings, onProgress, signal }) {
       lastTs = tsMs;
       const mask = personMask(seg.segmentForVideo(segCanvas, tsMs));
       eng.refine(mask.data, mask.w, mask.h, rot);
-      eng.composite(await nextBg(ts / 1e6));
+      const outPtr = composeFrame(eng, L, await nextBg(ts / 1e6), canvasBuf, outBuf);
 
       while (encoder.encodeQueueSize > 4) await tick();
-      const out = new VideoFrame(eng.view(eng.dst, eng.size), {
-        format: 'I420', codedWidth: W, codedHeight: H, timestamp: ts, duration: dur,
+      const out = new VideoFrame(eng.view(outPtr, i420Size(CW, CH)), {
+        format: 'I420', codedWidth: CW, codedHeight: CH, timestamp: ts, duration: dur,
         ...(colorSpace ? { colorSpace } : {}),
       });
       encoder.encode(out, { keyFrame: done % keyEvery === 0 });
@@ -441,6 +529,8 @@ export async function exportVideo({ meta, bg, settings, onProgress, signal }) {
     for (const f of frameQueue) f.close();
     if (decoder.state !== 'closed') decoder.close();
     if (encoder.state !== 'closed') encoder.close();
+    if (canvasBuf) M._hbrw_free(canvasBuf);
+    if (outBuf) M._hbrw_free(outBuf);
     eng.destroy();
   }
 }

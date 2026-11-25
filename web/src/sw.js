@@ -1,5 +1,5 @@
 // Caches the whole app so it keeps working with no connection.
-const CACHE = 'hbr-v3';
+const CACHE = 'hbr-v4';
 const FILES = ['./', 'index.html', 'app.js', 'hbr_core.js', 'hbr_core.wasm', 'manifest.webmanifest',
   'vendor/vision_wasm_internal.js', 'vendor/vision_wasm_internal.wasm',
   'models.js'];

@@ -7,7 +7,10 @@ const state = {
   file: null, url: null, meta: null, videoEl: null,
   kind: 'color', argb: SWATCHES[0], image: null, bgVideo: null, blur: 0.03,
   showOriginal: false, timeS: 0, rendering: false, again: false, abort: null, result: null,
+  aspect: 'original', fit: false, placement: { scale: 1, panX: 0, panY: 0, fill: 0xff000000 },
 };
+const SHAPES = [['original', 'Original'], ['9:16', '9:16'], ['1:1', '1:1'], ['4:5', '4:5'], ['16:9', '16:9']];
+const frame = () => ({ aspect: state.aspect, fit: state.fit });
 
 const hex = (argb) => '#' + (argb & 0xffffff).toString(16).padStart(6, '0');
 const setErr = (m) => ($('err').textContent = m || '');
@@ -21,8 +24,8 @@ function settings() {
 
 function background() {
   switch (state.kind) {
-    case 'image': if (state.image) return { type: 'image', bitmap: state.image }; break;
-    case 'video': if (state.bgVideo) return { type: 'video', element: state.bgVideo }; break;
+    case 'image': if (state.image) return { type: 'image', bitmap: state.image, placement: { ...state.placement } }; break;
+    case 'video': if (state.bgVideo) return { type: 'video', element: state.bgVideo, placement: { ...state.placement } }; break;
     case 'blur': return { type: 'blur', amount: state.blur };
   }
   return { type: 'color', argb: state.argb };
@@ -47,6 +50,101 @@ function markSwatches() {
   for (const b of document.querySelectorAll('.sw')) b.setAttribute('aria-pressed', String(+b.dataset.c === state.argb));
 }
 
+// ---------- frame size
+function shapeIcon(id) {
+  const r = id === 'original' ? (state.meta ? state.meta.displayWidth / state.meta.displayHeight : 16 / 9)
+    : id.split(':').reduce((a, b) => a / b);
+  const box = 26, w = r >= 1 ? box : box * r, h = r >= 1 ? box / r : box;
+  return `<i style="width:${w.toFixed(1)}px;height:${h.toFixed(1)}px"></i>`;
+}
+function drawShapes() {
+  $('shapes').innerHTML = SHAPES.map(([id, label]) =>
+    `<button class="shape" data-a="${id}" aria-pressed="${id === state.aspect}"><span style="height:26px;display:grid;place-items:center">${shapeIcon(id)}</span>${label}</button>`).join('');
+  const on = state.aspect !== 'original';
+  $('fitToggle').classList.toggle('hidden', !on);
+  $('fitHint').classList.toggle('hidden', !on);
+  for (const b of $('fitToggle').querySelectorAll('button')) b.setAttribute('aria-pressed', String((b.dataset.fit === '1') === state.fit));
+  $('fitHint').textContent = state.fit
+    ? 'The whole video is shown; your background fills the rest of the frame.'
+    : 'The video fills the frame; the edges outside it are trimmed.';
+  updateKeeps();
+}
+$('shapes').addEventListener('click', (e) => {
+  const b = e.target.closest('.shape');
+  if (!b) return;
+  state.aspect = b.dataset.a;
+  drawShapes();
+  schedule(true);
+});
+$('fitToggle').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  state.fit = b.dataset.fit === '1';
+  drawShapes();
+  schedule(true);
+});
+function frameSize() {
+  const m = state.meta;
+  if (!m || state.aspect === 'original') return m ? [m.displayWidth, m.displayHeight] : null;
+  const [x, y] = state.aspect.split(':').map(Number), r = x / y, s = Math.min(m.displayWidth, m.displayHeight);
+  const ev = (v) => Math.max(2, Math.round(v / 2) * 2);
+  return r >= 1 ? [ev(s * r), s] : [s, ev(s / r)];
+}
+function updateKeeps() {
+  if (!state.meta) return;
+  if (state.aspect === 'original') {
+    $('keeps').textContent = `Exports at ${summary(state.meta)}, same rotation and timing, original audio copied untouched.`;
+  } else {
+    const [w, h] = frameSize();
+    $('keeps').textContent = `Exports a ${state.aspect} frame at ${w}×${h} (${state.fit ? 'whole video' : 'filled'}), same frame rate and timing, original audio copied untouched.`;
+  }
+}
+drawShapes();
+
+// ---------- background size and position
+$('fillSw').innerHTML = SWATCHES.map((c) =>
+  `<button class="sw" style="background:${hex(c)}" data-c="${c}" aria-label="Colour ${hex(c)}" aria-pressed="${c === state.placement.fill}"></button>`).join('');
+$('fillSw').addEventListener('click', (e) => {
+  const b = e.target.closest('.sw');
+  if (!b) return;
+  state.placement.fill = +b.dataset.c;
+  for (const x of $('fillSw').querySelectorAll('.sw')) x.setAttribute('aria-pressed', String(+x.dataset.c === state.placement.fill));
+  schedule(true);
+});
+function drawPlacement() {
+  const movable = (state.kind === 'image' && state.image) || (state.kind === 'video' && state.bgVideo);
+  $('place').classList.toggle('hidden', !movable);
+  $('out').classList.toggle('movable', !!movable);
+  $('scale').value = state.placement.scale;
+  $('scaleV').textContent = Math.round(state.placement.scale * 100) + '%';
+  $('fillRow').classList.toggle('hidden', state.placement.scale >= 1);
+}
+$('scale').oninput = (e) => { state.placement.scale = +e.target.value; drawPlacement(); schedule(); };
+$('resetPlace').onclick = () => { Object.assign(state.placement, { scale: 1, panX: 0, panY: 0 }); drawPlacement(); schedule(true); };
+{
+  // drag the preview: the picture follows the finger
+  let drag = null;
+  const out = $('out');
+  out.addEventListener('pointerdown', (e) => {
+    if (!out.classList.contains('movable')) return;
+    drag = { x: e.clientX, y: e.clientY };
+    out.setPointerCapture(e.pointerId);
+  });
+  out.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const r = out.getBoundingClientRect();
+    const sign = state.placement.scale >= 1 ? -1 : 1;
+    const clamp = (v) => Math.max(-1, Math.min(1, v));
+    state.placement.panX = clamp(state.placement.panX + sign * 2 * (e.clientX - drag.x) / r.width);
+    state.placement.panY = clamp(state.placement.panY + sign * 2 * (e.clientY - drag.y) / r.height);
+    drag = { x: e.clientX, y: e.clientY };
+    schedule();
+  });
+  const end = () => { if (drag) { drag = null; schedule(true); } };
+  out.addEventListener('pointerup', end);
+  out.addEventListener('pointercancel', end);
+}
+
 // ---------- background kind
 function setKind(k) {
   state.kind = k;
@@ -55,6 +153,7 @@ function setKind(k) {
   $('optImage').classList.toggle('hidden', k !== 'image');
   $('optVideo').classList.toggle('hidden', k !== 'video');
   $('optBlur').classList.toggle('hidden', k !== 'blur');
+  drawPlacement();
   schedule(true);
 }
 document.querySelector('.seg').addEventListener('click', (e) => {
@@ -108,7 +207,7 @@ async function openVideo(file) {
     $('drop').classList.add('hidden');
     $('scrub').classList.remove('hidden');
     $('meta').textContent = `${file.name} · ${summary(meta)}`;
-    $('keeps').textContent = `Exports at ${summary(meta)}, same rotation and timing, original audio copied untouched.`;
+    drawShapes();
     $('export').disabled = false;
     $('result').classList.add('hidden');
     state.timeS = meta.durationS * 0.2;
@@ -166,7 +265,7 @@ async function render() {
     try {
       await renderPreview({
         videoEl: state.videoEl, canvas: $('out'), timeS: state.timeS, bg: background(),
-        settings: settings(), landscape: state.meta.displayWidth > state.meta.displayHeight,
+        settings: settings(), landscape: state.meta.displayWidth > state.meta.displayHeight, frame: frame(),
       });
       if (!state.showOriginal) $('out').classList.remove('hidden');
       setErr('');
@@ -191,7 +290,7 @@ $('export').onclick = async () => {
   state.abort = new AbortController();
   try {
     const r = await exportVideo({
-      meta: state.meta, bg: background(), settings: settings(), signal: state.abort.signal,
+      meta: state.meta, bg: background(), settings: settings(), signal: state.abort.signal, frame: frame(),
       onProgress: ({ fraction, frames, total, fps }) => {
         $('pbar').value = fraction;
         const left = fps > 0 ? Math.round((total - frames) / fps) : 0;
@@ -243,4 +342,4 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http') && wind
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
-window.__hbr = { openVideo, state }; // test hook
+window.__hbr = { openVideo, state, schedule, drawShapes, drawPlacement }; // test hook

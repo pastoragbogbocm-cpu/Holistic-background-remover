@@ -93,14 +93,35 @@ export class Engine {
     this.M._hbrw_rgba_to_i420_fill(p, imageData.width, imageData.height, ptr, dw, dh, matrix, full ? 1 : 0);
   }
 
-  /** Fills this.bg from an upright picture, rotated into stored orientation. */
-  setBackgroundPicture(imageData, rotation, matrix, full) {
-    if (!rotation) return this.rgbaToI420(imageData, this.bg, this.w, this.h, matrix, full);
+  /**
+   * Fills `dst` (tw x th, stored orientation; default this.bg) from an upright
+   * picture, aspect-filled and rotated into stored orientation.
+   */
+  setBackgroundPicture(imageData, rotation, matrix, full, dst = this.bg, tw = this.w, th = this.h) {
+    if (!rotation) return this.rgbaToI420(imageData, dst, tw, th, matrix, full);
     const swap = rotation === 90 || rotation === 270;
-    const dw = swap ? this.h : this.w;
-    const dh = swap ? this.w : this.h;
-    this.rgbaToI420(imageData, this.tmp, dw, dh, matrix, full);
-    this.M._hbrw_rotate_i420(this.tmp, dw, dh, this.bg, (360 - rotation) % 360);
+    const dw = swap ? th : tw;
+    const dh = swap ? tw : th;
+    const tmp = dw * dh * 1.5 <= this.size ? this.tmp : this.ensureTmp(i420Size(dw, dh));
+    this.rgbaToI420(imageData, tmp, dw, dh, matrix, full);
+    this.M._hbrw_rotate_i420(tmp, dw, dh, dst, (360 - rotation) % 360);
+  }
+
+  ensureTmp(n) {
+    if (n > (this.bigTmpCap || 0)) {
+      if (this.bigTmp) this.M._hbrw_free(this.bigTmp);
+      this.bigTmp = this.M._hbrw_alloc(n);
+      this.bigTmpCap = n;
+    }
+    return this.bigTmp;
+  }
+
+  /** Any tight I420 buffer -> RGBA ImageData. */
+  toRgba(ptr, w, h, matrix, full) {
+    const n = w * h * 4;
+    const p = this.ensureRgba(n);
+    this.M._hbrw_i420_to_rgba(ptr, w, h, p, matrix, full ? 1 : 0);
+    return new ImageData(new Uint8ClampedArray(this.view(p, n)), w, h);
   }
 
   yuvColor(argb, matrix, full) {
@@ -114,9 +135,25 @@ export class Engine {
     return new ImageData(new Uint8ClampedArray(this.view(p, n)), this.w, this.h);
   }
 
+  // ---- layout helpers (all buffers are tight I420 in the WASM heap)
+  placeRect(iw, ih, cw, ch, fit, scale = 1, panX = 0, panY = 0) {
+    const p = this.ensureMask(4); // reuse scratch: 4 ints
+    this.M._hbrw_place_rect(iw, ih, cw, ch, fit ? 1 : 0, scale, panX, panY, p);
+    const v = new Int32Array(this.M.HEAPU8.buffer, p, 4);
+    return { x: v[0], y: v[1], w: v[2], h: v[3] };
+  }
+
+  blit(src, sw, sh, dst, dw, dh, r) {
+    if (this.M._hbrw_blit_i420(src, sw, sh, dst, dw, dh, r.x, r.y, r.w, r.h)) throw new Error('blit failed');
+  }
+
+  crop(src, sw, sh, r, dst, dw, dh) {
+    if (this.M._hbrw_crop_i420(src, sw, sh, r.x, r.y, r.w, r.h, dst, dw, dh)) throw new Error('crop failed');
+  }
+
   destroy() {
     const M = this.M;
     M._hbrw_destroy(this.e);
-    for (const p of [this.src, this.dst, this.bg, this.tmp, this.maskPtr, this.rgbaPtr]) if (p) M._hbrw_free(p);
+    for (const p of [this.src, this.dst, this.bg, this.tmp, this.maskPtr, this.rgbaPtr, this.bigTmp]) if (p) M._hbrw_free(p);
   }
 }
