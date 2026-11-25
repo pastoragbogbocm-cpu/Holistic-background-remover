@@ -42,6 +42,7 @@ class _EditorScreenState extends State<EditorScreen> {
   MatteSettings _settings = const MatteSettings();
   OutputFrame _frame = const OutputFrame();
   BackgroundPlacement _placement = const BackgroundPlacement();
+  Soundtrack _sound = const Soundtrack();
   bool _showOriginal = false;
   int _timeMs = 0;
 
@@ -150,6 +151,7 @@ class _EditorScreenState extends State<EditorScreen> {
         background: _background,
         settings: _settings,
         frame: _frame,
+        soundtrack: _sound,
       ),
     );
   }
@@ -236,6 +238,8 @@ class _EditorScreenState extends State<EditorScreen> {
             ),
             const SizedBox(height: 12),
             _backgroundOptions(theme),
+            const SizedBox(height: 24),
+            _soundSection(theme),
             const SizedBox(height: 20),
             ExpansionTile(
               tilePadding: EdgeInsets.zero,
@@ -295,7 +299,11 @@ class _EditorScreenState extends State<EditorScreen> {
       (_kind == _BgKind.image && _imagePath != null) || (_kind == _BgKind.video && _videoPath != null);
 
   String _exportSummary(VideoInfo info) {
-    if (_frame.shape == FrameShape.original) return 'Export keeps ${info.summary}';
+    if (_frame.shape == FrameShape.original && _sound.isOriginal) return 'Export keeps ${info.summary}';
+    if (_frame.shape == FrameShape.original) {
+      return 'Export keeps ${info.displayWidth}x${info.displayHeight} video quality · sound: '
+          '${_sound.musicPath != null ? 'voice + music' : 'voice level changed'}';
+    }
     final (w, h) = _frame.sizeFor(info.displayWidth, info.displayHeight);
     final fps = info.frameRate.toStringAsFixed(info.frameRate % 1 == 0 ? 0 : 2);
     return 'Export: ${w}x$h (${_frame.shape.label}, ${_frame.fit ? 'whole video' : 'filled'})'
@@ -403,6 +411,87 @@ class _EditorScreenState extends State<EditorScreen> {
       ],
     ]);
   }
+
+  Future<void> _pickMusic() async {
+    final path = await pickOriginal(FileType.audio);
+    if (path == null) return;
+    setState(() => _sound = _sound.copyWith(musicPath: path));
+  }
+
+  Widget _soundSection(ThemeData theme) {
+    final scheme = theme.colorScheme;
+    final small = theme.textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant);
+    final music = _sound.musicPath;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Sound', style: theme.textTheme.titleMedium),
+      const SizedBox(height: 8),
+      Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: scheme.primary.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(Icons.music_note_rounded, color: scheme.primary),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(music == null ? 'No music' : music.split('/').last,
+                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+              Text(music == null ? 'Add a song or beat from your phone' : 'Loops to the end, fades out', style: small),
+            ]),
+          ),
+          if (music != null)
+            IconButton(
+              tooltip: 'Remove music',
+              onPressed: () => setState(() => _sound = _sound.copyWith(clearMusic: true)),
+              icon: const Icon(Icons.close),
+            ),
+          FilledButton.tonal(onPressed: _pickMusic, child: Text(music == null ? 'Add music' : 'Change')),
+        ]),
+      ),
+      if (music != null) ...[
+        _volumeRow(Icons.music_note_outlined, 'Music', _sound.musicVolume, 1.0,
+            (v) => _sound = _sound.copyWith(musicVolume: v)),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Lower music while talking'),
+          subtitle: const Text('Keeps the voice clear over the music'),
+          value: _sound.duckMusic,
+          onChanged: (v) => setState(() => _sound = _sound.copyWith(duckMusic: v)),
+        ),
+      ],
+      if (widget.info.hasAudio)
+        _volumeRow(Icons.record_voice_over_outlined, 'Voice', _sound.voiceVolume, 1.5,
+            (v) => _sound = _sound.copyWith(voiceVolume: v)),
+    ]);
+  }
+
+  Widget _volumeRow(IconData icon, String label, double value, double max, void Function(double) apply) =>
+      Row(children: [
+        Icon(icon, size: 20),
+        const SizedBox(width: 8),
+        SizedBox(width: 48, child: Text(label)),
+        Expanded(
+          child: Slider(
+            value: value.clamp(0.0, max),
+            max: max,
+            divisions: (max * 20).round(),
+            label: '${(value * 100).round()}%',
+            onChanged: (v) => setState(() => apply(v)),
+          ),
+        ),
+        SizedBox(width: 44, child: Text('${(value * 100).round()}%', textAlign: TextAlign.end)),
+      ]);
 
   void _dragBackground(DragUpdateDetails d, Size box) {
     // Follow the finger: a zoomed-in picture moves its visible part, a

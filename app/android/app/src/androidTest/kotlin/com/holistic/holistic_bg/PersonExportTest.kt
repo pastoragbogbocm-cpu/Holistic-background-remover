@@ -76,6 +76,96 @@ class PersonExportTest {
         )
     }
 
+    @Test(timeout = 240_000)
+    fun musicIsMixedWithTheVoice() {
+        val input = asset("person.mp4")
+        val music = asset("music.mp3")
+        val output = File(app.cacheDir, "music_out.mp4")
+        output.delete()
+        val settings = mapOf("audio" to mapOf("musicPath" to music.path, "musicVolume" to 0.5, "voiceVolume" to 1.0, "duck" to false))
+        Exporter(app, input.path, output.path, mapOf("type" to "color", "argb" to GREEN), settings, { _, _, _ -> }, { false }).run()
+        val (pcm, rate) = decodeAudio(output)
+        assertTrue("audio too short: ${pcm.size / 2} frames", pcm.size / 2 > rate) // > 1 s of stereo
+        val voice = tone(pcm, rate, 440.0)
+        val tune = tone(pcm, rate, 880.0)
+        val off = tone(pcm, rate, 1234.0)
+        assertTrue("voice missing (440 Hz $voice vs noise $off)", voice > off * 20)
+        assertTrue("music missing (880 Hz $tune vs noise $off)", tune > off * 20)
+    }
+
+    @Test(timeout = 240_000)
+    fun originalSoundIsCopiedWhenNoMusic() {
+        val input = asset("person.mp4")
+        val output = File(app.cacheDir, "nomusic_out.mp4")
+        output.delete()
+        Exporter(app, input.path, output.path, mapOf("type" to "color", "argb" to GREEN), emptyMap<String, Any>(), { _, _, _ -> }, { false }).run()
+        val (pcm, rate) = decodeAudio(output)
+        assertTrue("voice missing", tone(pcm, rate, 440.0) > tone(pcm, rate, 1234.0) * 20)
+        assertTrue("unexpected music", tone(pcm, rate, 880.0) < tone(pcm, rate, 440.0) / 20)
+    }
+
+    /** Interleaved 16-bit stereo-or-mono PCM of the first audio track, and its rate. */
+    private fun decodeAudio(f: File): Pair<ShortArray, Int> {
+        val ex = android.media.MediaExtractor()
+        ex.setDataSource(f.path)
+        val t = (0 until ex.trackCount).first {
+            ex.getTrackFormat(it).getString(android.media.MediaFormat.KEY_MIME)!!.startsWith("audio/")
+        }
+        ex.selectTrack(t)
+        val fmt = ex.getTrackFormat(t)
+        val codec = android.media.MediaCodec.createDecoderByType(fmt.getString(android.media.MediaFormat.KEY_MIME)!!)
+        codec.configure(fmt, null, null, 0)
+        codec.start()
+        val out = java.io.ByteArrayOutputStream()
+        val info = android.media.MediaCodec.BufferInfo()
+        var inEos = false
+        var rate = fmt.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
+        var ch = fmt.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
+        while (true) {
+            if (!inEos) {
+                val i = codec.dequeueInputBuffer(10_000)
+                if (i >= 0) {
+                    val n = ex.readSampleData(codec.getInputBuffer(i)!!, 0)
+                    if (n < 0) { codec.queueInputBuffer(i, 0, 0, 0, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM); inEos = true }
+                    else { codec.queueInputBuffer(i, 0, n, ex.sampleTime, 0); ex.advance() }
+                }
+            }
+            val o = codec.dequeueOutputBuffer(info, 10_000)
+            if (o == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                rate = codec.outputFormat.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
+                ch = codec.outputFormat.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
+            } else if (o >= 0) {
+                val b = codec.getOutputBuffer(o)!!
+                val bytes = ByteArray(info.size)
+                b.position(info.offset); b.get(bytes)
+                out.write(bytes)
+                codec.releaseOutputBuffer(o, false)
+                if ((info.flags and android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
+            }
+        }
+        codec.stop(); codec.release(); ex.release()
+        val sb = java.nio.ByteBuffer.wrap(out.toByteArray()).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+        val all = ShortArray(sb.remaining()).also { sb.get(it) }
+        // first channel only
+        val mono = ShortArray(all.size / ch) { all[it * ch] }
+        return Pair(mono, rate)
+    }
+
+    /** Goertzel power of one frequency over the middle second. */
+    private fun tone(pcm: ShortArray, rate: Int, freq: Double): Double {
+        val start = minOf(pcm.size / 4, rate / 2)
+        val n = minOf(rate, pcm.size - start)
+        val k = 2 * Math.cos(2 * Math.PI * freq / rate)
+        var s1 = 0.0
+        var s2 = 0.0
+        for (i in 0 until n) {
+            val s = pcm[start + i] / 32768.0 + k * s1 - s2
+            s2 = s1
+            s1 = s
+        }
+        return s1 * s1 + s2 * s2 - k * s1 * s2
+    }
+
     /** Output has the requested display size and still shows the person. */
     private fun checkLayout(clip: String, background: Map<String, Any>, settings: Map<String, Any>, expectW: Int, expectH: Int) {
         val input = asset(clip)

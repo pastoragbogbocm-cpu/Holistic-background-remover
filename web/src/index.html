@@ -145,6 +145,21 @@ footer{color:var(--mute);font-size:13px;padding:8px max(3vw,16px) 28px;max-width
     </div>
 
     <div class="card">
+      <h3>Sound</h3>
+      <div class="row2" style="display:flex;gap:10px;align-items:center">
+        <div style="flex:1"><div id="musicName" style="font-weight:600">No music</div><div class="small" id="musicHint">Add a song or beat from this device</div></div>
+        <button class="btn hidden" id="musicDel" aria-label="Remove music">✕</button>
+        <button class="btn" id="musicPick">Add music</button>
+      </div>
+      <div id="musicOpts" class="hidden">
+        <label class="row"><span>Music volume <b id="mvolV">30%</b></span><input type="range" id="mvol" min="0" max="1" step="0.05" value="0.3"></label>
+        <label class="check"><input type="checkbox" id="duck" checked> Lower music while talking</label>
+      </div>
+      <label class="row"><span>Voice volume <b id="vvolV">100%</b></span><input type="range" id="vvol" min="0" max="1.5" step="0.05" value="1"></label>
+      <input type="file" id="musicFile" accept="audio/*" class="hidden">
+    </div>
+
+    <div class="card">
       <h3>Edges</h3>
       <label class="row"><span>Edge smoothing <span>Raw · Smoothest</span></span><input type="range" id="smooth" min="0" max="1" step="0.05" value="0.8"></label>
       <label class="row"><span>Edge softness <span>Crisp · Soft</span></span><input type="range" id="soft" min="0" max="1" step="0.05" value="0.5"></label>

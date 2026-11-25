@@ -226,6 +226,49 @@ class MatteSettings {
       );
 }
 
+/// The exported soundtrack: the video's own sound, optionally with music.
+class Soundtrack {
+  const Soundtrack({
+    this.musicPath,
+    this.musicVolume = 0.3,
+    this.voiceVolume = 1.0,
+    this.duckMusic = true,
+  });
+
+  /// An audio file on the device (MP3, M4A/AAC, WAV, OGG...). Loops if
+  /// shorter than the video and fades out at the end.
+  final String? musicPath;
+
+  /// 0..1 music level.
+  final double musicVolume;
+
+  /// 0..1.5 level of the video's own sound (1 = unchanged).
+  final double voiceVolume;
+
+  /// Lowers the music automatically while the person speaks.
+  final bool duckMusic;
+
+  /// Nothing to mix: the original audio is copied untouched.
+  bool get isOriginal => musicPath == null && voiceVolume == 1.0;
+
+  Map<String, Object?> toMap() => {
+        'audio': {
+          'musicPath': musicPath,
+          'musicVolume': musicVolume,
+          'voiceVolume': voiceVolume,
+          'duck': duckMusic,
+        },
+      };
+
+  Soundtrack copyWith({String? musicPath, bool clearMusic = false, double? musicVolume, double? voiceVolume, bool? duckMusic}) =>
+      Soundtrack(
+        musicPath: clearMusic ? null : (musicPath ?? this.musicPath),
+        musicVolume: musicVolume ?? this.musicVolume,
+        voiceVolume: voiceVolume ?? this.voiceVolume,
+        duckMusic: duckMusic ?? this.duckMusic,
+      );
+}
+
 /// Progress of a running export.
 class ExportProgress {
   const ExportProgress({
@@ -315,6 +358,7 @@ class HbrEngine {
     required Background background,
     MatteSettings settings = const MatteSettings(),
     OutputFrame frame = const OutputFrame(),
+    Soundtrack soundtrack = const Soundtrack(),
   }) async* {
     final jobId = DateTime.now().microsecondsSinceEpoch.toString();
     final events = _allProgress.where((e) => e.jobId == jobId);
@@ -326,7 +370,7 @@ class HbrEngine {
         'input': inputPath,
         'output': outputPath,
         'background': background.toMap(),
-        'settings': {...settings.toMap(), ...frame.toMap()},
+        'settings': {...settings.toMap(), ...frame.toMap(), ...soundtrack.toMap()},
       });
       await for (final e in controller.stream) {
         yield e;

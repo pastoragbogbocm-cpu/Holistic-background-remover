@@ -333,6 +333,104 @@ export async function renderPreview({ videoEl, canvas, timeS, bg, settings, land
   }
 }
 
+// ---------------------------------------------------------------- soundtrack
+
+/**
+ * Mixes the video's own sound with music (looped, faded, lowered while the
+ * person talks) and encodes it. Returns { codec, sampleRate, channels, chunks }.
+ */
+async function mixSoundtrack(file, durationS, sound) {
+  const rate = 48000;
+  const frames = Math.max(1, Math.round(durationS * rate));
+  const dec = new OfflineAudioContext(2, 1, rate);
+  const decode = async (blob) => dec.decodeAudioData(await blob.arrayBuffer());
+  let voice = null;
+  try { voice = await decode(file); } catch { voice = null; } // video without sound
+  const music = sound.music ? await decode(sound.music) : null;
+
+  const ctx = new OfflineAudioContext(2, frames, rate);
+  if (voice) {
+    const src = ctx.createBufferSource();
+    src.buffer = voice;
+    const g = ctx.createGain();
+    g.gain.value = sound.voiceVolume ?? 1;
+    src.connect(g).connect(ctx.destination);
+    src.start(0);
+  }
+  if (music) {
+    const src = ctx.createBufferSource();
+    src.buffer = music;
+    src.loop = true;
+    const g = ctx.createGain();
+    const vol = sound.musicVolume ?? 0.3;
+    // ducking curve from the voice loudness, 20 ms steps
+    const step = 0.02, n = Math.max(2, Math.ceil(durationS / step) + 1);
+    const curve = new Float32Array(n).fill(vol);
+    if (voice && sound.duck !== false) {
+      const ch0 = voice.getChannelData(0);
+      const ch1 = voice.numberOfChannels > 1 ? voice.getChannelData(1) : ch0;
+      const per = Math.round(voice.sampleRate * step);
+      let env = 0, duck = 1;
+      for (let i = 0; i < n; i++) {
+        let peak = 0;
+        for (let j = i * per, e = Math.min(ch0.length, (i + 1) * per); j < e; j++) {
+          peak = Math.max(peak, Math.abs(ch0[j]), Math.abs(ch1[j]));
+        }
+        env += (peak - env) * (peak > env ? 0.8 : 0.06);
+        const t = Math.min(1, Math.max(0, (env - 0.015) / (0.07 - 0.015)));
+        const target = 1 - 0.65 * t * t * (3 - 2 * t);
+        duck += (target - duck) * (target < duck ? 0.5 : 0.06);
+        curve[i] = vol * duck;
+      }
+    }
+    // fade in 0.3 s, fade out 1.5 s (shorter on very short clips)
+    const fin = Math.min(0.3, durationS / 8), fout = Math.min(1.5, durationS / 4);
+    for (let i = 0; i < n; i++) {
+      const t = i * step;
+      curve[i] *= Math.min(1, t / fin, Math.max(0, durationS - t) / fout);
+    }
+    g.gain.setValueCurveAtTime(curve, 0, Math.max(0.05, durationS));
+    src.connect(g).connect(ctx.destination);
+    src.start(0);
+  }
+  const mixed = await ctx.startRendering();
+
+  // gentle limiter: transparent below 0.9
+  const L = mixed.getChannelData(0), R = mixed.getChannelData(1);
+  for (const c of [L, R]) for (let i = 0; i < c.length; i++) {
+    const a = Math.abs(c[i]);
+    if (a > 0.9) c[i] = Math.sign(c[i]) * (0.9 + 0.1 * Math.tanh((a - 0.9) / 0.1));
+  }
+
+  let codec = null;
+  for (const [c, mux] of [['mp4a.40.2', 'aac'], ['opus', 'opus']]) {
+    try {
+      const r = await AudioEncoder.isConfigSupported({ codec: c, sampleRate: rate, numberOfChannels: 2, bitrate: 192000 });
+      if (r.supported) { codec = { config: r.config, mux }; break; }
+    } catch {}
+  }
+  if (!codec) throw new Error("This browser can't encode audio");
+  const chunks = [];
+  let err = null;
+  const enc = new AudioEncoder({ output: (chunk, meta) => chunks.push({ chunk, meta }), error: (e) => (err = e) });
+  enc.configure(codec.config);
+  const block = 4096;
+  for (let i = 0; i < frames; i += block) {
+    const n = Math.min(block, frames - i);
+    const data = new Float32Array(n * 2);
+    data.set(L.subarray(i, i + n), 0);
+    data.set(R.subarray(i, i + n), n);
+    const ad = new AudioData({ format: 'f32-planar', sampleRate: rate, numberOfFrames: n, numberOfChannels: 2, timestamp: Math.round((i * 1e6) / rate), data });
+    enc.encode(ad);
+    ad.close();
+    if (err) throw err;
+  }
+  await enc.flush();
+  enc.close();
+  if (err) throw err;
+  return { codec: codec.mux, sampleRate: rate, channels: 2, chunks };
+}
+
 // ---------------------------------------------------------------- export
 
 async function pickEncoder(meta, W, H) {
@@ -367,7 +465,7 @@ async function pickEncoder(meta, W, H) {
  * Full export. onProgress({fraction, frames, total, fps}). Returns
  * {blob, warnings, encoder}. `signal` cancels.
  */
-export async function exportVideo({ meta, bg, settings, onProgress, signal, frame }) {
+export async function exportVideo({ meta, bg, settings, onProgress, signal, frame, sound, file }) {
   const M = await loadCore();
   const W = meta.width, H = meta.height, rot = meta.rotation;
   const warnings = [];
@@ -380,12 +478,24 @@ export async function exportVideo({ meta, bg, settings, onProgress, signal, fram
   const { config: encConfig, mux } = await pickEncoder(meta, CW, CH);
 
   const audio = meta.audio;
-  const muxAudio = audio && audio.codec && audio.description !== undefined;
-  if (audio && !muxAudio) warnings.push('The audio format could not be copied, so it was left out.');
+  let mixed = null;
+  const wantsMix = sound && (sound.music || (sound.voiceVolume ?? 1) !== 1);
+  if (wantsMix) {
+    try {
+      mixed = await mixSoundtrack(file, meta.durationS, sound);
+    } catch (e) {
+      console.warn('soundtrack mix failed', e);
+      warnings.push(`The music could not be added (${e.message || e}); the original sound was kept.`);
+    }
+  }
+  const muxAudio = !mixed && audio && audio.codec && audio.description !== undefined;
+  if (!mixed && audio && !muxAudio) warnings.push('The audio format could not be copied, so it was left out.');
+  const audioCfg = mixed ? { codec: mixed.codec, numberOfChannels: mixed.channels, sampleRate: mixed.sampleRate }
+    : muxAudio ? { codec: audio.codec, numberOfChannels: audio.channels, sampleRate: audio.sampleRate } : null;
   const muxer = new Muxer({
     target: new ArrayBufferTarget(),
     video: { codec: mux, width: CW, height: CH, rotation: rot },
-    ...(muxAudio ? { audio: { codec: audio.codec, numberOfChannels: audio.channels, sampleRate: audio.sampleRate } } : {}),
+    ...(audioCfg ? { audio: audioCfg } : {}),
     fastStart: 'in-memory',
     firstTimestampBehavior: 'offset',
   });
@@ -508,7 +618,9 @@ export async function exportVideo({ meta, bg, settings, onProgress, signal, fram
     await encoder.flush();
     if (encError) throw encError;
 
-    if (muxAudio) {
+    if (mixed) {
+      for (const { chunk, meta: md } of mixed.chunks) muxer.addAudioChunk(chunk, md);
+    } else if (muxAudio) {
       let first = true;
       for (const s of audio.samples) {
         muxer.addAudioChunkRaw(s.data, 'key', Math.round((s.cts * 1e6) / s.timescale),

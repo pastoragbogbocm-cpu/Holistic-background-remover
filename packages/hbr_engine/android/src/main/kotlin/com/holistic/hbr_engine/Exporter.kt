@@ -46,6 +46,7 @@ class Exporter(
     private var muxerStarted = false
     private var videoTrack = -1
     private var audio: AudioCopier? = null
+    private var mixedAudio: File? = null
 
     /** Returns a warning to show the user, or null. */
     fun run(): String? {
@@ -74,7 +75,20 @@ class Exporter(
                         val mux = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
                         muxer = mux
                         mux.setOrientationHint(meta.rotation)
-                        if (meta.audioTrack >= 0) {
+                        val mix = AudioMix.from(settings)
+                        if (!mix.passthrough) {
+                            // music and/or voice level: mix into a new AAC track first
+                            try {
+                                val f = File(context.cacheDir, "hbr_mix_${System.nanoTime()}.m4a")
+                                mixedAudio = f
+                                AudioMixer.render(inputPath, meta.audioTrack, meta.durationUs, mix, f)
+                                audio = AudioCopier(f.path, 0)
+                            } catch (e: Exception) {
+                                Log.w("HbrEngine", "audio mix failed", e)
+                                warning = "The music could not be added (${e.message}); the original sound was kept."
+                            }
+                        }
+                        if (audio == null && meta.audioTrack >= 0) {
                             audio = try {
                                 AudioCopier(inputPath, meta.audioTrack)
                             } catch (e: Exception) {
@@ -140,6 +154,7 @@ class Exporter(
             encoder?.release()
             try { muxer?.release() } catch (_: Exception) {}
             audio?.close()
+            mixedAudio?.delete()
             decoder.close()
         }
     }

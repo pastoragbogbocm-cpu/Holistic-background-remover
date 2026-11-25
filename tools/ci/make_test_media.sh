@@ -17,4 +17,7 @@ ffmpeg -y -loglevel error "${common[@]}" -vf "scale=720:900,setsar=1" "${enc[@]}
 ffmpeg -y -loglevel error "${common[@]}" -vf "scale=720:900,setsar=1,transpose=2" "${enc[@]}" "$out/tmp_side.mp4"
 ffmpeg -y -loglevel error -display_rotation -90 -i "$out/tmp_side.mp4" -c copy "$out/person_rot90.mp4"
 rm -f "$out/tmp_side.mp4"
+# Background music: an 880 Hz tone at 44.1 kHz (the clips' own sound is
+# 440 Hz at 48 kHz), so tests can hear both and check resampling.
+ffmpeg -y -loglevel error -f lavfi -t 5 -i "sine=frequency=880:sample_rate=44100" -ac 2 -c:a libmp3lame -b:a 160k "$out/music.mp3"
 ls -la "$out"

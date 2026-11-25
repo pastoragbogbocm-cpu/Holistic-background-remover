@@ -11,6 +11,7 @@ const state = {
 };
 const SHAPES = [['original', 'Original'], ['9:16', '9:16'], ['1:1', '1:1'], ['4:5', '4:5'], ['16:9', '16:9']];
 const frame = () => ({ aspect: state.aspect, fit: state.fit });
+const sound = () => ({ music: state.music, musicVolume: +$('mvol').value, voiceVolume: +$('vvol').value, duck: $('duck').checked });
 
 const hex = (argb) => '#' + (argb & 0xffffff).toString(16).padStart(6, '0');
 const setErr = (m) => ($('err').textContent = m || '');
@@ -92,6 +93,11 @@ function frameSize() {
 }
 function updateKeeps() {
   if (!state.meta) return;
+  const snd = state.music ? ' Sound: voice + music, re-encoded.' : (+$('vvol').value !== 1 ? ' Sound: voice level changed, re-encoded.' : '');
+  updateKeepsBase();
+  if (snd) $('keeps').textContent = $('keeps').textContent.replace(', original audio copied untouched.', '.') + snd;
+}
+function updateKeepsBase() {
   if (state.aspect === 'original') {
     $('keeps').textContent = `Exports at ${summary(state.meta)}, same rotation and timing, original audio copied untouched.`;
   } else {
@@ -144,6 +150,23 @@ $('resetPlace').onclick = () => { Object.assign(state.placement, { scale: 1, pan
   out.addEventListener('pointerup', end);
   out.addEventListener('pointercancel', end);
 }
+
+// ---------- sound
+function drawSound() {
+  $('musicName').textContent = state.music ? state.music.name : 'No music';
+  $('musicHint').textContent = state.music ? 'Loops to the end, fades out' : 'Add a song or beat from this device';
+  $('musicPick').textContent = state.music ? 'Change' : 'Add music';
+  $('musicDel').classList.toggle('hidden', !state.music);
+  $('musicOpts').classList.toggle('hidden', !state.music);
+  $('mvolV').textContent = Math.round(+$('mvol').value * 100) + '%';
+  $('vvolV').textContent = Math.round(+$('vvol').value * 100) + '%';
+  updateKeeps();
+}
+$('musicPick').onclick = () => $('musicFile').click();
+$('musicFile').onchange = (e) => { const f = e.target.files[0]; if (f) { state.music = f; drawSound(); } };
+$('musicDel').onclick = () => { state.music = null; $('musicFile').value = ''; drawSound(); };
+$('mvol').oninput = drawSound;
+$('vvol').oninput = drawSound;
 
 // ---------- background kind
 function setKind(k) {
@@ -291,6 +314,7 @@ $('export').onclick = async () => {
   try {
     const r = await exportVideo({
       meta: state.meta, bg: background(), settings: settings(), signal: state.abort.signal, frame: frame(),
+      sound: sound(), file: state.file,
       onProgress: ({ fraction, frames, total, fps }) => {
         $('pbar').value = fraction;
         const left = fps > 0 ? Math.round((total - frames) / fps) : 0;
