@@ -240,6 +240,7 @@ struct hbr_engine {
   bool has_prev_coeffs = false;
   float mask_px = 1.f;  // working-res pixels per mask pixel
   std::vector<float> motion;          // per-pixel temporal update weight
+  std::vector<float> moving;          // 0..1 how much this area moves now
   std::vector<float> prev_a, prev_b;  // previous guided-filter coefficients
 
   std::vector<uint8_t> alpha;       // W*H
@@ -272,6 +273,7 @@ void hbr_default_config(hbr_config* c, int width, int height) {
   c->threads = 0;
   c->decontaminate = 1;
   c->edge_smoothing = 0.8f;
+  c->motion_sharpen = 0.85f;
 }
 
 hbr_engine* hbr_create(const hbr_config* cfg) {
@@ -298,7 +300,7 @@ hbr_engine* hbr_create(const hbr_config* cfg) {
   size_t n = static_cast<size_t>(e->gw) * e->gh;
   for (auto* v : {&e->guide, &e->prev_guide, &e->mask, &e->prev_mask, &e->mI,
                   &e->mP, &e->mIP, &e->mII, &e->a, &e->b, &e->scratch,
-                  &e->motion, &e->prev_a, &e->prev_b})
+                  &e->motion, &e->moving, &e->prev_a, &e->prev_b})
     v->assign(n, 0.f);
   e->alpha.assign(static_cast<size_t>(e->W) * e->H, 0);
   return e;
@@ -390,19 +392,28 @@ int refine_common(hbr_engine* e, const uint8_t* y, int y_stride) {
   // the mask are model jitter and get averaged; large changes are real
   // motion and pass straight through so moving limbs do not ghost.
   float k = clampf(e->cfg.temporal_strength, 0.f, 1.f);
-  if (e->has_prev && k > 0.f) {
+  if (e->has_prev) {
     float base = 1.f - 0.85f * k;
     for (size_t i = 0; i < n; ++i) {
       float cur = e->mask[i], prev = e->prev_mask[i];
       float d = std::fabs(cur - prev);
-      // the image itself changing (motion) also counts, not only the mask
+      // the image itself changing (motion) also counts, not only the mask:
+      // a moving arm must not drag a semi-transparent copy of where it was
       float dg = std::fabs(e->guide[i] - e->prev_guide[i]) * 2.5f;
-      float w = base + (1.f - base) * smoothstep(0.08f, 0.35f, d);
+      float mv = std::max(d, dg);
+      float w = base + (1.f - base) * smoothstep(0.06f, 0.3f, mv);
       e->mask[i] = prev + w * (cur - prev);
-      e->motion[i] = base + (1.f - base) * smoothstep(0.06f, 0.3f, std::max(d, dg));
+      e->motion[i] = w;
+      e->moving[i] = smoothstep(0.04f, 0.2f, mv);
     }
+    // Spread the motion map over the edge band (a couple of mask pixels):
+    // the band is where the halo shows, and it trails the moving edge.
+    int mr = std::max(1, static_cast<int>(std::lround(2.f * e->mask_px)));
+    box_mean(e->moving.data(), e->scratch.data(), e->gw, e->gh, mr, e->tmp);
+    for (size_t i = 0; i < n; ++i) e->moving[i] = std::min(1.f, 2.f * e->scratch[i]);
   } else {
     std::fill(e->motion.begin(), e->motion.end(), 1.f);
+    std::fill(e->moving.begin(), e->moving.end(), 0.f);
   }
   std::memcpy(e->prev_mask.data(), e->mask.data(), n * sizeof(float));
   std::memcpy(e->prev_guide.data(), e->guide.data(), n * sizeof(float));
@@ -488,6 +499,7 @@ int refine_common(hbr_engine* e, const uint8_t* y, int y_stride) {
   float sc = 255.f / (255.f * (hi - lo));  // takes I in 0..255
   float lo255 = lo * 255.f;
   const int W = e->W, gw = e->gw;
+  const float sharpen = 3.f * clampf(e->cfg.motion_sharpen, 0.f, 1.f);
   parallel_for(e->H, e->threads, [&](int yb, int ye) {
     std::vector<float> ra(gw), rb(gw);
     for (int yy = yb; yy < ye; ++yy) {
@@ -507,6 +519,7 @@ int refine_common(hbr_engine* e, const uint8_t* y, int y_stride) {
       uint8_t* out = e->alpha.data() + static_cast<size_t>(yy) * W;
       uint8_t* pa = e->prev_alpha.data() + static_cast<size_t>(yy) * W;
       const float* mrow = e->motion.data() + static_cast<size_t>(y0) * gw;
+      const float* mvrow = e->moving.data() + static_cast<size_t>(y0) * gw;
       for (int x = 0; x < W; ++x) {
         const float* wx = e->up_x.w.data() + e->up_x.offset[x];
         int x0 = e->up_x.start[x];
@@ -519,6 +532,12 @@ int refine_common(hbr_engine* e, const uint8_t* y, int y_stride) {
         // smooth (C1) roll-off instead of a hard clamp: no visible kink
         // where the soft edge meets fully opaque / fully clear pixels
         float t = clampf((q - lo255) * sc * (1.f / 255.f), 0.f, 1.f);
+        if (sharpen > 0.f) {
+          // Moving edges: a narrower transition, so the pixel is either the
+          // person or the new background instead of a blurry mix of both.
+          float m = mvrow[x0];
+          if (m > 0.f) t = clampf(0.5f + (t - 0.5f) * (1.f + sharpen * m), 0.f, 1.f);
+        }
         float av255 = t * t * (3.f - 2.f * t) * 255.f;
         if (temporal_full) {
           // steady edges where the picture is static, instant where it moves

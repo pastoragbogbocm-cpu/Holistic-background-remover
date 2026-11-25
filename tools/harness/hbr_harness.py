@@ -29,7 +29,8 @@ class HbrConfig(C.Structure):
                 ("temporal_strength", C.c_float), ("edge_radius", C.c_float),
                 ("edge_eps", C.c_float), ("matte_low", C.c_float),
                 ("matte_high", C.c_float), ("threads", C.c_int),
-                ("decontaminate", C.c_int), ("edge_smoothing", C.c_float)]
+                ("decontaminate", C.c_int), ("edge_smoothing", C.c_float),
+                ("motion_sharpen", C.c_float)]
 
 
 class HbrYuv(C.Structure):
@@ -74,6 +75,7 @@ def main():
     ap.add_argument("--temporal", type=float, default=0.6)
     ap.add_argument("--edge-smoothing", type=float, default=None)
     ap.add_argument("--no-decontaminate", action="store_true")
+    ap.add_argument("--motion-sharpen", type=float, default=None)
     ap.add_argument("--matte", help="also write the alpha matte as a video")
     args = ap.parse_args()
 
@@ -124,6 +126,8 @@ def main():
     cfg = HbrConfig()
     lib.hbr_default_config(C.byref(cfg), W, H)
     cfg.temporal_strength = args.temporal
+    if args.motion_sharpen is not None:
+        cfg.motion_sharpen = args.motion_sharpen
     if args.edge_smoothing is not None:
         cfg.edge_smoothing = args.edge_smoothing
     if args.no_decontaminate:

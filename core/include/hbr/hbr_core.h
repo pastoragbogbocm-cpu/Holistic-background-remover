@@ -52,6 +52,10 @@ typedef struct {
                               blur) so no fringe/halo shows. Default 1     */
   float edge_smoothing;    /* 0..1: removes stair-steps and shimmer from
                               the matte outline. Default 0.8               */
+  float motion_sharpen;    /* 0..1: where the person moves, narrow the
+                              semi-transparent edge band so the old
+                              background does not show through as a blurry
+                              halo. Default 0.85                            */
 } hbr_config;
 
 /* Planar or semi-planar 4:2:0 image. For NV12 set u = base of UV plane,

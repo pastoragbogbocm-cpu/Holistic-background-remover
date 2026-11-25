@@ -311,8 +311,54 @@ static void test_decontamination() {
   CHECK(on < off * 0.5, "decontamination should remove the fringe: on=%.2f off=%.2f", on, off);
 }
 
+// Width (in pixels) of the semi-transparent band on the middle row after a
+// few frames in which a soft edge either stays put or moves sideways.
+static int edge_band(bool moving, float sharpen) {
+  const int W = 320, H = 96;
+  hbr_config c;
+  hbr_default_config(&c, W, H);
+  c.motion_sharpen = sharpen;
+  c.threads = 1;
+  hbr_engine* e = hbr_create(&c);
+  Frame f(W, H);
+  std::vector<float> mask(W * H);
+  for (int t = 0; t < 6; ++t) {
+    int edge = 120 + (moving ? 14 * t : 70);
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x) {
+        // soft (motion-blurred) luma ramp and a soft model mask around it
+        float r = std::fmin(1.f, std::fmax(0.f, (x - (edge - 15)) / 30.f));
+        f.y[y * W + x] = static_cast<uint8_t>(200 - 150 * r);
+        mask[y * W + x] = std::fmin(1.f, std::fmax(0.f, ((edge + 20) - x) / 40.f));
+      }
+    std::fill(f.uv.begin(), f.uv.end(), 128);
+    hbr_refine_f32(e, f.y.data(), W, mask.data(), W, H, W, 0);
+  }
+  int stride = 0;
+  const uint8_t* a = hbr_alpha(e, &stride);
+  int band = 0;
+  for (int x = 0; x < W; ++x) {
+    uint8_t v = a[(H / 2) * stride + x];
+    if (v > 20 && v < 235) ++band;
+  }
+  hbr_destroy(e);
+  return band;
+}
+
+static void test_motion_sharpen() {
+  int still = edge_band(false, 0.85f);
+  int moving_off = edge_band(true, 0.f);
+  int moving_on = edge_band(true, 0.85f);
+  std::printf("edge band: still %d px, moving %d px -> %d px with motion sharpen\n",
+              still, moving_off, moving_on);
+  CHECK(moving_on < moving_off * 0.75, "moving edge band not narrower (%d vs %d)", moving_on, moving_off);
+  CHECK(moving_on > 0, "moving edge became a hard cut");
+  CHECK(still == edge_band(false, 0.f), "still edges must not change (%d)", still);
+}
+
 int main() {
   test_decontamination();
+  test_motion_sharpen();
   test_rotate();
   test_full_person_is_lossless();
   test_no_person_is_background();
