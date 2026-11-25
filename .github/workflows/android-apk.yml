@@ -56,6 +56,21 @@ jobs:
             fi
           done
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: holistic-bg-apk
+          path: app/build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Publish APK as the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/app/outputs/flutter-apk/app-release.apk holistic-background-remover.apk
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest holistic-background-remover.apk \
+            --title "Holistic Background Remover (latest build)" \
+            --notes "Built from ${GITHUB_SHA::7}. Download holistic-background-remover.apk on your Android phone and open it to install."
+
       - name: Make test clips
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
@@ -68,6 +83,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: On-device test - person stays in front of the new background
+        timeout-minutes: 30
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 31
@@ -85,17 +101,3 @@ jobs:
           path: app/build/app/reports/androidTests/
           if-no-files-found: ignore
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: holistic-bg-apk
-          path: app/build/app/outputs/flutter-apk/app-release.apk
-
-      - name: Publish APK as the latest release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cp app/build/app/outputs/flutter-apk/app-release.apk holistic-background-remover.apk
-          gh release delete latest --yes --cleanup-tag || true
-          gh release create latest holistic-background-remover.apk \
-            --title "Holistic Background Remover (latest build)" \
-            --notes "Built from ${GITHUB_SHA::7} and tested on an Android emulator. Download holistic-background-remover.apk on your Android phone and open it to install."
