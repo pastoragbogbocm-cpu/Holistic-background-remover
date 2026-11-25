@@ -1,0 +1,29 @@
+name: Speech assets
+
+# Mirrors the pinned whisper.cpp source and models into a release so that
+# build machines without access to Hugging Face can fetch them.
+on:
+  workflow_dispatch:
+  push:
+    paths: [tools/speech/fetch.sh, .github/workflows/speech-assets.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: tools/speech/fetch.sh --all
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tar -czf whisper-src.tar.gz -C third_party whisper.cpp
+          cp packages/hbr_engine/android/src/main/assets/ggml-base-q5_1.bin .
+          cp third_party/models/*.bin .
+          gh release delete speech-assets --yes --cleanup-tag || true
+          gh release create speech-assets whisper-src.tar.gz ggml-*.bin \
+            --title "Speech assets (whisper.cpp source and models)" --prerelease \
+            --notes "Mirror of whisper.cpp v1.7.6 and ggml Whisper models (MIT licence) used for on-device captions."
