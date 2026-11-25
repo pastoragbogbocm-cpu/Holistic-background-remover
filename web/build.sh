@@ -13,6 +13,14 @@ em++ -O3 -msimd128 -std=c++17 -I../core/include \
 node tools_embed_models.mjs ../packages/hbr_engine/android/src/main/assets dist/models.js
 npx esbuild src/app.js --bundle --format=esm --minify --target=es2022 \
   --external:./hbr_core.js --external:./models.js --outfile=dist/app.js
+# captions: speech worker + whisper.cpp WASM (build_speech.sh) + the small multilingual model
+npx esbuild src/speech_worker.js --bundle --format=esm --minify --target=es2022 \
+  --external:./hbr_speech.js --outfile=dist/speech_worker.js
+cp src/hbr_speech.js src/hbr_speech.wasm dist/
+mkdir -p dist/models
+MODEL=${SPEECH_MODEL:-../third_party/models/ggml-tiny-q5_1.bin}
+[ -f "$MODEL" ] || MODEL=/tmp/speech/ggml-tiny-q5_1.bin
+cp "$MODEL" dist/models/ggml-tiny-q5_1.bin
 cp node_modules/@mediapipe/tasks-vision/wasm/vision_wasm_internal.{js,wasm} dist/vendor/
 cp src/index.html src/sw.js src/manifest.webmanifest dist/
 echo "built web/dist"

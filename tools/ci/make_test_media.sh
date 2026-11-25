@@ -20,4 +20,11 @@ rm -f "$out/tmp_side.mp4"
 # Background music: an 880 Hz tone at 44.1 kHz (the clips' own sound is
 # 440 Hz at 48 kHz), so tests can hear both and check resampling.
 ffmpeg -y -loglevel error -f lavfi -t 5 -i "sine=frequency=880:sample_rate=44100" -ac 2 -c:a libmp3lame -b:a 160k "$out/music.mp3"
+# Speech clip for captions: the person video with the JFK sample from
+# whisper.cpp (public domain), 11 s.
+jfk="$(dirname "$0")/../../third_party/whisper.cpp/samples/jfk.wav"
+if [ -f "$jfk" ]; then
+  ffmpeg -y -loglevel error -loop 1 -framerate 30 -t 11 -i "$img" -i "$jfk" \
+    -vf "scale=720:900,setsar=1" -c:v libx264 -pix_fmt yuv420p -b:v 2M -c:a aac -b:a 128k -shortest "$out/speech.mp4"
+fi
 ls -la "$out"

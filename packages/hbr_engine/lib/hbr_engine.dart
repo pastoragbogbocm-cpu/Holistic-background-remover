@@ -5,6 +5,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/services.dart';
 
@@ -269,6 +270,167 @@ class Soundtrack {
       );
 }
 
+/// A recognised word with its time in the video (milliseconds).
+class CaptionWord {
+  const CaptionWord(this.text, this.startMs, this.endMs);
+  final String text;
+  final int startMs;
+  final int endMs;
+
+  Map<String, Object?> toMap() => {'w': text, 't0': startMs, 't1': endMs};
+
+  factory CaptionWord.fromMap(Map<String, Object?> m) =>
+      CaptionWord(m['w'] as String, (m['t0'] as num).toInt(), (m['t1'] as num).toInt());
+}
+
+/// One caption on screen: a few words shown together.
+class CaptionCue {
+  const CaptionCue(this.words);
+  final List<CaptionWord> words;
+
+  int get startMs => words.first.startMs;
+  int get endMs => words.last.endMs;
+  String get text => words.map((w) => w.text).join(' ');
+
+  /// Same time span with edited text; word times are spread by length.
+  CaptionCue withText(String text) {
+    final parts = text.trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+    if (parts.isEmpty) return CaptionCue(const []);
+    final total = parts.fold<int>(0, (a, p) => a + p.length + 1);
+    final span = (endMs - startMs).clamp(1, 1 << 30);
+    var t = startMs.toDouble();
+    final out = <CaptionWord>[];
+    for (final p in parts) {
+      final d = span * (p.length + 1) / total;
+      out.add(CaptionWord(p, t.round(), (t + d).round()));
+      t += d;
+    }
+    return CaptionCue(out);
+  }
+
+  Map<String, Object?> toMap() =>
+      {'t0': startMs, 't1': endMs, 'words': [for (final w in words) w.toMap()]};
+
+  /// Groups words into short captions: up to [maxWords] words / [maxChars]
+  /// characters, breaking at sentence ends and pauses.
+  static List<CaptionCue> group(List<CaptionWord> words, {int maxWords = 5, int maxChars = 28}) {
+    final cues = <CaptionCue>[];
+    var cur = <CaptionWord>[];
+    var chars = 0;
+    for (final w in words) {
+      final pause = cur.isNotEmpty && w.startMs - cur.last.endMs > 600;
+      if (cur.isNotEmpty && (pause || cur.length >= maxWords || chars + w.text.length + 1 > maxChars)) {
+        cues.add(CaptionCue(cur));
+        cur = [];
+        chars = 0;
+      }
+      cur.add(w);
+      chars += w.text.length + 1;
+      if (RegExp(r'[.!?]$').hasMatch(w.text)) {
+        cues.add(CaptionCue(cur));
+        cur = [];
+        chars = 0;
+      }
+    }
+    if (cur.isNotEmpty) cues.add(CaptionCue(cur));
+    // keep each caption up until the next one starts (no flicker in short gaps)
+    for (var i = 0; i + 1 < cues.length; i++) {
+      final gap = cues[i + 1].startMs - cues[i].endMs;
+      if (gap > 0 && gap < 400) {
+        final last = cues[i].words.last;
+        cues[i] = CaptionCue([
+          ...cues[i].words.sublist(0, cues[i].words.length - 1),
+          CaptionWord(last.text, last.startMs, cues[i + 1].startMs),
+        ]);
+      }
+    }
+    return cues;
+  }
+}
+
+enum CaptionPreset {
+  pop('pop', 'Pop'),
+  box('box', 'Box'),
+  clean('clean', 'Clean'),
+  karaoke('karaoke', 'Karaoke');
+
+  const CaptionPreset(this.id, this.label);
+  final String id;
+  final String label;
+}
+
+enum CaptionPosition { top, middle, bottom }
+
+class CaptionStyle {
+  const CaptionStyle({
+    this.preset = CaptionPreset.pop,
+    this.position = CaptionPosition.bottom,
+    this.size = 1.0,
+    this.textColor = 0xFFFFFFFF,
+    this.highlightColor = 0xFFFFD60A,
+    this.uppercase = false,
+  });
+  final CaptionPreset preset;
+  final CaptionPosition position;
+
+  /// 0.6..1.6 relative text size.
+  final double size;
+  final int textColor;
+
+  /// Colour of the word being spoken (Pop, Box, Karaoke).
+  final int highlightColor;
+  final bool uppercase;
+
+  Map<String, Object?> toMap() => {
+        'preset': preset.id,
+        'position': position.name,
+        'size': size,
+        'textColor': textColor,
+        'highlightColor': highlightColor,
+        'uppercase': uppercase,
+      };
+
+  CaptionStyle copyWith({
+    CaptionPreset? preset,
+    CaptionPosition? position,
+    double? size,
+    int? textColor,
+    int? highlightColor,
+    bool? uppercase,
+  }) =>
+      CaptionStyle(
+        preset: preset ?? this.preset,
+        position: position ?? this.position,
+        size: size ?? this.size,
+        textColor: textColor ?? this.textColor,
+        highlightColor: highlightColor ?? this.highlightColor,
+        uppercase: uppercase ?? this.uppercase,
+      );
+}
+
+/// Burned-in captions.
+class Captions {
+  const Captions({this.enabled = true, this.cues = const [], this.style = const CaptionStyle()});
+  final bool enabled;
+  final List<CaptionCue> cues;
+  final CaptionStyle style;
+
+  bool get active => enabled && cues.isNotEmpty;
+
+  Map<String, Object?> toMap() => active
+      ? {
+          'captions': {
+            'enabled': true,
+            'cues': [for (final c in cues) if (c.words.isNotEmpty) c.toMap()],
+            'style': style.toMap(),
+          },
+        }
+      : const {};
+
+  Captions copyWith({bool? enabled, List<CaptionCue>? cues, CaptionStyle? style}) =>
+      Captions(enabled: enabled ?? this.enabled, cues: cues ?? this.cues, style: style ?? this.style);
+}
+
 /// Progress of a running export.
 class ExportProgress {
   const ExportProgress({
@@ -335,13 +497,14 @@ class HbrEngine {
     required Background background,
     MatteSettings settings = const MatteSettings(),
     OutputFrame frame = const OutputFrame(),
+    Captions captions = const Captions(),
     int maxSize = 960,
   }) async {
     final bytes = await _channel.invokeMethod<Uint8List>('preview', {
       'path': path,
       'timeMs': timeMs,
       'background': background.toMap(),
-      'settings': {...settings.toMap(), ...frame.toMap()},
+      'settings': {...settings.toMap(), ...frame.toMap(), ...captions.toMap()},
       'maxSize': maxSize,
     });
     return bytes!;
@@ -359,6 +522,7 @@ class HbrEngine {
     MatteSettings settings = const MatteSettings(),
     OutputFrame frame = const OutputFrame(),
     Soundtrack soundtrack = const Soundtrack(),
+    Captions captions = const Captions(),
   }) async* {
     final jobId = DateTime.now().microsecondsSinceEpoch.toString();
     final events = _allProgress.where((e) => e.jobId == jobId);
@@ -370,7 +534,7 @@ class HbrEngine {
         'input': inputPath,
         'output': outputPath,
         'background': background.toMap(),
-        'settings': {...settings.toMap(), ...frame.toMap(), ...soundtrack.toMap()},
+        'settings': {...settings.toMap(), ...frame.toMap(), ...soundtrack.toMap(), ...captions.toMap()},
       });
       await for (final e in controller.stream) {
         yield e;
@@ -381,6 +545,27 @@ class HbrEngine {
       await controller.close();
     }
   }
+
+  /// Recognises the speech in [path] on the device. [language] is a
+  /// Whisper code ("en", "fr", ...) or "auto". [onProgress] gets 0..1.
+  static Future<List<CaptionWord>> transcribe(
+    String path, {
+    String language = 'en',
+    void Function(double fraction)? onProgress,
+  }) async {
+    final jobId = 'speech-${DateTime.now().microsecondsSinceEpoch}';
+    final sub = _allProgress.where((e) => e.jobId == jobId).listen((e) => onProgress?.call(e.fraction));
+    try {
+      final json = await _channel.invokeMethod<String>(
+          'transcribe', {'jobId': jobId, 'path': path, 'language': language});
+      final list = jsonDecode(json ?? '[]') as List<Object?>;
+      return [for (final w in list) CaptionWord.fromMap((w as Map).cast<String, Object?>())];
+    } finally {
+      await sub.cancel();
+    }
+  }
+
+  static Future<void> cancelTranscribe() => _channel.invokeMethod<void>('cancelTranscribe');
 
   /// Cancels the running export, if any. The partial file is deleted.
   static Future<void> cancel() => _channel.invokeMethod<void>('cancel');

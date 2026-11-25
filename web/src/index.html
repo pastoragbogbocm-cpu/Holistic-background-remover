@@ -73,6 +73,18 @@ progress{width:100%;height:10px;accent-color:var(--acc)}
 .swatches.mini .sw{width:26px;height:26px}
 #out.movable{cursor:grab;touch-action:none}
 #out.movable:active{cursor:grabbing}
+select{background:#0f1216;color:var(--ink);border:1px solid var(--line);border-radius:10px;min-height:44px;padding:0 10px;font:inherit;flex:1 1 160px}
+.presets{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:6px}
+.preset{display:flex;flex-direction:column;align-items:center;gap:4px;background:#0f1216;border:1.5px solid var(--line);border-radius:12px;padding:10px 4px 8px;color:var(--mute);font:inherit;font-size:12px;cursor:pointer}
+.preset b{font-size:18px;font-weight:900;color:#fff;line-height:1.1;padding:1px 5px;border-radius:5px}
+.preset[aria-pressed=true]{border-color:var(--acc);color:var(--acc);background:#10221f}
+.toggle.three{display:grid;grid-template-columns:repeat(3,1fr);width:100%;margin-top:6px}
+.capEdit{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
+.capEdit summary{cursor:pointer;font-size:14px;font-weight:600}
+#capList{max-height:280px;overflow:auto;display:flex;flex-direction:column;gap:6px;margin-top:8px}
+.cue{display:grid;grid-template-columns:52px 1fr;gap:8px;align-items:center}
+.cue time{font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums;cursor:pointer}
+.cue input{background:#0f1216;border:1px solid var(--line);border-radius:8px;color:var(--ink);font:inherit;font-size:14px;padding:7px 9px;min-width:0}
 footer{color:var(--mute);font-size:13px;padding:8px max(3vw,16px) 28px;max-width:1440px;margin:0 auto}
 </style>
 </head>
@@ -157,6 +169,31 @@ footer{color:var(--mute);font-size:13px;padding:8px max(3vw,16px) 28px;max-width
       </div>
       <label class="row"><span>Voice volume <b id="vvolV">100%</b></span><input type="range" id="vvol" min="0" max="1.5" step="0.05" value="1"></label>
       <input type="file" id="musicFile" accept="audio/*" class="hidden">
+    </div>
+
+    <div class="card">
+      <h3>Captions</h3>
+      <p class="small" id="capHint" style="margin:0 0 10px">Turns the spoken words into captions, right here on this device.</p>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <select id="capLang" aria-label="Spoken language"></select>
+        <button class="btn" id="capGo">Generate captions</button>
+      </div>
+      <div id="capProg" class="hidden" style="margin-top:12px">
+        <progress id="capBar" max="100" value="0"></progress>
+        <div class="row2" style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span class="small" id="capText">Starting…</span><button class="btn" id="capCancel">Cancel</button></div>
+      </div>
+      <div id="capOpts" class="hidden">
+        <label class="check"><input type="checkbox" id="capOn" checked> Show captions on the video</label>
+        <div class="small" style="margin-top:12px">Style</div>
+        <div class="presets" id="capPresets"></div>
+        <div class="small" style="margin-top:12px">Position</div>
+        <div class="toggle three" id="capPos"><button data-p="top">Top</button><button data-p="middle">Middle</button><button data-p="bottom" aria-pressed="true">Bottom</button></div>
+        <label class="row"><span>Text size <b id="capSizeV">100%</b></span><input type="range" id="capSize" min="0.6" max="1.8" step="0.05" value="1"></label>
+        <div class="small" style="margin-top:12px">Highlight colour</div>
+        <div class="swatches mini" id="capHi"></div>
+        <label class="check"><input type="checkbox" id="capCaps"> ALL CAPS</label>
+        <details class="capEdit"><summary>Edit words <span class="small" id="capCount"></span></summary><div id="capList"></div></details>
+      </div>
     </div>
 
     <div class="card">

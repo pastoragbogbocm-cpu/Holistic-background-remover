@@ -7,6 +7,7 @@ import 'package:hbr_engine/hbr_engine.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:video_player/video_player.dart';
 
+import 'captions_panel.dart';
 import 'export_sheet.dart';
 import 'home_screen.dart';
 
@@ -43,6 +44,7 @@ class _EditorScreenState extends State<EditorScreen> {
   OutputFrame _frame = const OutputFrame();
   BackgroundPlacement _placement = const BackgroundPlacement();
   Soundtrack _sound = const Soundtrack();
+  Captions _captions = const Captions();
   bool _showOriginal = false;
   int _timeMs = 0;
 
@@ -102,6 +104,7 @@ class _EditorScreenState extends State<EditorScreen> {
           background: _background,
           settings: _settings,
           frame: _frame,
+          captions: _captions,
         );
         if (!mounted) return;
         setState(() {
@@ -152,6 +155,7 @@ class _EditorScreenState extends State<EditorScreen> {
         settings: _settings,
         frame: _frame,
         soundtrack: _sound,
+        captions: _captions,
       ),
     );
   }
@@ -238,6 +242,21 @@ class _EditorScreenState extends State<EditorScreen> {
             ),
             const SizedBox(height: 12),
             _backgroundOptions(theme),
+            const SizedBox(height: 24),
+            CaptionsSection(
+              videoPath: widget.path,
+              hasAudio: widget.info.hasAudio,
+              captions: _captions,
+              onChanged: (c) {
+                setState(() => _captions = c);
+                _schedulePreview();
+              },
+              onSeek: (ms) {
+                setState(() => _timeMs = ms);
+                if (_player.value.isInitialized) _player.seekTo(Duration(milliseconds: ms));
+                _schedulePreview(immediate: true);
+              },
+            ),
             const SizedBox(height: 24),
             _soundSection(theme),
             const SizedBox(height: 20),

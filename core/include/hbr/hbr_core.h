@@ -153,6 +153,13 @@ int hbr_fill_yuv(hbr_yuv* dst, int w, int h, uint8_t y, uint8_t u, uint8_t v);
 /* Heavy blur in place (amount = radius as a fraction of the short side). */
 int hbr_blur_yuv(hbr_yuv* img, int w, int h, float amount);
 
+/* Draws an RGBA image (e.g. a caption) over a 4:2:0 frame with alpha
+ * blending, top-left at (x, y), clipped. premultiplied = 1 when the RGBA
+ * colour is already multiplied by alpha (Android bitmaps). */
+int hbr_overlay_rgba(hbr_yuv* dst, int dw, int dh, const uint8_t* rgba, int ow,
+                     int oh, int ostride, int x, int y, int premultiplied,
+                     hbr_matrix m, int full_range);
+
 /* 4:2:0 -> RGBA (for previews/thumbnails). */
 int hbr_yuv_to_rgba(const hbr_yuv* src, int w, int h, uint8_t* rgba,
                     int stride, hbr_matrix m, int full_range);

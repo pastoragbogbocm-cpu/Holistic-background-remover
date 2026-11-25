@@ -18,6 +18,7 @@ class ExportSheet extends StatefulWidget {
     required this.settings,
     this.frame = const OutputFrame(),
     this.soundtrack = const Soundtrack(),
+    this.captions = const Captions(),
   });
 
   final String inputPath;
@@ -26,6 +27,7 @@ class ExportSheet extends StatefulWidget {
   final MatteSettings settings;
   final OutputFrame frame;
   final Soundtrack soundtrack;
+  final Captions captions;
 
   @override
   State<ExportSheet> createState() => _ExportSheetState();
@@ -64,6 +66,7 @@ class _ExportSheetState extends State<ExportSheet> {
       settings: widget.settings,
       frame: widget.frame,
       soundtrack: widget.soundtrack,
+      captions: widget.captions,
     ).listen((p) async {
       if (!mounted) return;
       if (p.error != null) {

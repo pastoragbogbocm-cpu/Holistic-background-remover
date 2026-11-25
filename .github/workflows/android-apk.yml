@@ -24,6 +24,9 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Fetch speech recognition source and model
+        run: tools/speech/fetch.sh
+
       - name: Core unit tests
         run: |
           cmake -S core -B build/core -DHBR_BUILD_TESTS=ON
@@ -78,6 +81,10 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           script: adb logcat -c; (cd app/android && ./gradlew --no-watch-fs :app:connectedReleaseAndroidTest --stacktrace); rc=$?; adb logcat -d > logcat.txt; exit $rc
+
+      - name: Show app log when a device test fails
+        if: failure()
+        run: grep -E "HbrEngine|HbrTest|AndroidRuntime|whisper|MediaMuxer|MPEG4Writer" logcat.txt | tail -200 || true
 
       - name: Upload test report
         if: always()

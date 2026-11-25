@@ -14,3 +14,4 @@ __pycache__/
 app/android/app/src/androidTest/assets/
 third_party/
 packages/hbr_engine/android/src/main/assets/ggml-*.bin
+web/build-speech/

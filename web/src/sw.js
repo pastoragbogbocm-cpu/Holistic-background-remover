@@ -1,8 +1,8 @@
 // Caches the whole app so it keeps working with no connection.
-const CACHE = 'hbr-v4';
+const CACHE = 'hbr-v5';
 const FILES = ['./', 'index.html', 'app.js', 'hbr_core.js', 'hbr_core.wasm', 'manifest.webmanifest',
   'vendor/vision_wasm_internal.js', 'vendor/vision_wasm_internal.wasm',
-  'models.js'];
+  'models.js', 'speech_worker.js', 'hbr_speech.js', 'hbr_speech.wasm', 'models/ggml-tiny-q5_1.bin'];
 self.addEventListener('install', (e) => e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())));
 self.addEventListener('activate', (e) => e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())));
 self.addEventListener('fetch', (e) => {

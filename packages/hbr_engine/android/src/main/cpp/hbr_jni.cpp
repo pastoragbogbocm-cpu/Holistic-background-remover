@@ -241,6 +241,19 @@ JNI_FN(jint, nativeBlur)(JNIEnv* env, jclass, jobject img, jint w, jint h,
   return hbr_blur_yuv(&dv, w, h, amount);
 }
 
+// Alpha-blends an RGBA buffer (premultiplied when premul) onto planes.
+JNI_FN(jint, nativeOverlay)(JNIEnv* env, jclass, jobject dy, jint dyStride,
+                           jobject du, jobject dv, jint duvStride, jint duvPix,
+                           jint dw, jint dh, jobject rgba, jint ow, jint oh,
+                           jint ostride, jint x, jint y, jboolean premul,
+                           jint matrix, jboolean full) {
+  hbr_yuv d{addr(env, dy), dyStride, addr(env, du), addr(env, dv), duvStride, duvPix};
+  uint8_t* s = addr(env, rgba);
+  if (!d.y || !d.u || !d.v || !s) return HBR_ERR_ARG;
+  return hbr_overlay_rgba(&d, dw, dh, s, ow, oh, ostride, x, y, premul ? 1 : 0,
+                          static_cast<hbr_matrix>(matrix), full ? 1 : 0);
+}
+
 // Returns 0x00YYUUVV.
 JNI_FN(jint, nativeRgbToYuv)(JNIEnv*, jclass, jint r, jint g, jint b,
                             jint matrix, jboolean full) {

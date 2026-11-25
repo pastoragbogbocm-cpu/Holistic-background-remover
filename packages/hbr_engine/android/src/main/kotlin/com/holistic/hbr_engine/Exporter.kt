@@ -67,6 +67,10 @@ class Exporter(
             val ch = layout.canvasH
             MatteEngine(w, h, temporal, softness, smoothing, clean).use { engine ->
                 val compositor = Compositor(engine, layout, meta.matrix, meta.fullRange)
+                val sideways = meta.rotation % 180 != 0
+                val captions = CaptionRenderer.from(
+                    settings, if (sideways) ch else cw, if (sideways) cw else ch, meta.rotation, meta.matrix, meta.fullRange,
+                )
                 BackgroundSource.create(background, cw, ch, meta.rotation, meta.matrix, meta.fullRange).use { bg ->
                     Segmenter(context, meta.displayWidth > meta.displayHeight, video = true).use { seg ->
                         encoder = createEncoder(meta, cw, ch)
@@ -90,10 +94,27 @@ class Exporter(
                         }
                         if (audio == null && meta.audioTrack >= 0) {
                             audio = try {
-                                AudioCopier(inputPath, meta.audioTrack)
+                                AudioCopier(inputPath, meta.audioTrack).also { c ->
+                                    if (!AudioCopier.muxable(c.format, context.cacheDir)) {
+                                        c.close()
+                                        throw IllegalStateException("format ${c.format.getString(MediaFormat.KEY_MIME)} cannot be copied")
+                                    }
+                                }
                             } catch (e: Exception) {
-                                warning = "Audio could not be copied: ${e.message}"
+                                Log.w("HbrEngine", "audio copy not possible, re-encoding", e)
                                 null
+                            }
+                            if (audio == null) {
+                                // the sound cannot be copied as it is: re-encode it (AAC 192k) so it is never lost
+                                try {
+                                    val f = File(context.cacheDir, "hbr_mix_${System.nanoTime()}.m4a")
+                                    mixedAudio = f
+                                    AudioMixer.render(inputPath, meta.audioTrack, meta.durationUs, AudioMix(null), f)
+                                    audio = AudioCopier(f.path, 0)
+                                } catch (e: Exception) {
+                                    Log.w("HbrEngine", "audio re-encode failed", e)
+                                    warning = "The sound could not be kept: ${e.message}"
+                                }
                             }
                         }
 
@@ -117,6 +138,10 @@ class Exporter(
                             compositor.compose(
                                 decoder.frame, bgFrame, p[0].buffer, p[0].rowStride, p[1].buffer, p[2].buffer,
                                 p[1].rowStride, p[1].pixelStride,
+                            )
+                            captions?.draw(
+                                (pts - firstPts) / 1000, p[0].buffer, p[0].rowStride, p[1].buffer, p[2].buffer,
+                                p[1].rowStride, p[1].pixelStride, cw, ch,
                             )
                             enc.queueInputBuffer(inIdx, 0, HbrNative.i420Size(cw, ch), pts, 0)
                             drain(enc, false)
@@ -326,4 +351,23 @@ class AudioCopier(path: String, trackIndex: Int) : AutoCloseable {
     }
 
     override fun close() = extractor.release()
+
+    companion object {
+        /** True when MediaMuxer accepts this track format as it is. */
+        fun muxable(format: MediaFormat, dir: File): Boolean {
+            val f = File(dir, "hbr_probe_${System.nanoTime()}.mp4")
+            var m: MediaMuxer? = null
+            return try {
+                m = MediaMuxer(f.path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                m.addTrack(format)
+                true
+            } catch (e: Exception) {
+                Log.w("HbrEngine", "muxer rejects audio format $format", e)
+                false
+            } finally {
+                try { m?.release() } catch (_: Exception) {}
+                f.delete()
+            }
+        }
+    }
 }

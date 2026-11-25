@@ -40,4 +40,20 @@ void main() {
     expect(ImageBackground('/a.jpg', placement: p).toMap(),
         {'type': 'image', 'path': '/a.jpg', 'scale': 1.5, 'panX': 1.0, 'panY': 0.0, 'fill': 0xFF000000});
   });
+
+  test('captions group into short lines and keep timing when edited', () {
+    final words = [
+      for (var i = 0; i < 12; i++) CaptionWord(i == 5 ? 'end.' : 'word$i', i * 300, i * 300 + 250),
+    ];
+    final cues = CaptionCue.group(words);
+    expect(cues.first.text, 'word0 word1 word2 word3');
+    expect(cues.any((c) => c.text.endsWith('end.')), isTrue);
+    final edited = cues.first.withText('Hello there friends');
+    expect(edited.words.length, 3);
+    expect(edited.startMs, cues.first.startMs);
+    expect(edited.endMs, cues.first.endMs);
+    final m = Captions(cues: cues).toMap()['captions'] as Map;
+    expect((m['style'] as Map)['preset'], 'pop');
+    expect(const Captions().toMap(), isEmpty);
+  });
 }

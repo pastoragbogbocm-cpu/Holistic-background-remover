@@ -64,7 +64,7 @@ android {
 
     // .tflite models must stay uncompressed so they can be memory-mapped.
     androidResources {
-        noCompress += listOf("tflite")
+        noCompress += listOf("tflite", "bin")
     }
 }
 

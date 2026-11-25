@@ -85,7 +85,7 @@ class PersonExportTest {
         val settings = mapOf("audio" to mapOf("musicPath" to music.path, "musicVolume" to 0.5, "voiceVolume" to 1.0, "duck" to false))
         Exporter(app, input.path, output.path, mapOf("type" to "color", "argb" to GREEN), settings, { _, _, _ -> }, { false }).run()
         val (pcm, rate) = decodeAudio(output)
-        assertTrue("audio too short: ${pcm.size / 2} frames", pcm.size / 2 > rate) // > 1 s of stereo
+        assertTrue("audio too short: ${pcm.size} frames at $rate Hz", pcm.size > rate) // > 1 s (decodeAudio returns one channel)
         val voice = tone(pcm, rate, 440.0)
         val tune = tone(pcm, rate, 880.0)
         val off = tone(pcm, rate, 1234.0)
@@ -102,6 +102,51 @@ class PersonExportTest {
         val (pcm, rate) = decodeAudio(output)
         assertTrue("voice missing", tone(pcm, rate, 440.0) > tone(pcm, rate, 1234.0) * 20)
         assertTrue("unexpected music", tone(pcm, rate, 880.0) < tone(pcm, rate, 440.0) / 20)
+    }
+
+    @Test(timeout = 480_000)
+    fun speechIsRecognisedOnDevice() {
+        val input = asset("speech.mp4")
+        val meta = com.holistic.hbr_engine.VideoProbe.probe(input.path)
+        val pcm = com.holistic.hbr_engine.Transcriber.loadAudio(input.path, meta.audioTrack, meta.durationUs)
+        val json = com.holistic.hbr_engine.Transcriber.open(app).use { it.transcribe(pcm, "en", null) }!!
+        android.util.Log.i("HbrTest", "transcript: $json")
+        val text = json.lowercase()
+        assertTrue("speech not recognised: $json", text.contains("country") && text.contains("ask"))
+    }
+
+    @Test(timeout = 240_000)
+    fun captionsAreBurnedIn() {
+        val input = asset("person.mp4")
+        val words = listOf("HELLO" to 0, "FROM" to 400, "HOLISTIC" to 800, "BG" to 1200).map { (w, t) ->
+            mapOf("w" to w, "t0" to t, "t1" to t + 400)
+        }
+        val captions = mapOf(
+            "enabled" to true,
+            "cues" to listOf(mapOf("t0" to 0, "t1" to 2000, "words" to words)),
+            "style" to mapOf("preset" to "box", "position" to "bottom", "size" to 1.2),
+        )
+        val bg = mapOf("type" to "color", "argb" to GREEN)
+        val plain = File(app.cacheDir, "cap_plain.mp4").also { it.delete() }
+        val withCaps = File(app.cacheDir, "cap_on.mp4").also { it.delete() }
+        Exporter(app, input.path, plain.path, bg, emptyMap<String, Any>(), { _, _, _ -> }, { false }).run()
+        Exporter(app, input.path, withCaps.path, bg, mapOf("captions" to captions), { _, _, _ -> }, { false }).run()
+        val a = frameAt(plain)
+        val b = frameAt(withCaps)
+        // the bottom fifth should differ (dark box with text), the top must not
+        fun diff(y0: Int, y1: Int): Float {
+            var d = 0
+            var n = 0
+            for (y in y0 until y1 step 3) for (x in 0 until a.width step 3) {
+                n++
+                if (!close(a.getPixel(x, y), b.getPixel(x, y))) d++
+            }
+            return d.toFloat() / n
+        }
+        val bottom = diff((a.height * 0.7).toInt(), (a.height * 0.9).toInt())
+        val top = diff(0, (a.height * 0.3).toInt())
+        assertTrue("caption not visible: bottom changed ${pct(bottom)}", bottom > 0.15f)
+        assertTrue("captions leaked into the top: ${pct(top)}", top < 0.02f)
     }
 
     /** Interleaved 16-bit stereo-or-mono PCM of the first audio track, and its rate. */

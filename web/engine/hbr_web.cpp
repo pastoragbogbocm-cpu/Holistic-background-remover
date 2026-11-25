@@ -130,4 +130,12 @@ EMSCRIPTEN_KEEPALIVE int hbrw_blur_i420(uint8_t* img, int w, int h, float amount
   hbr_yuv d = i420(img, w, h);
   return hbr_blur_yuv(&d, w, h, amount);
 }
+
+// ---- captions: draws an RGBA sprite (straight alpha) onto the frame ----
+EMSCRIPTEN_KEEPALIVE int hbrw_overlay_i420(uint8_t* dst, int w, int h, uint8_t* rgba, int ow, int oh,
+                                           int x, int y, int matrix, int full) {
+  hbr_yuv d = i420(dst, w, h);
+  return hbr_overlay_rgba(&d, w, h, rgba, ow, oh, ow * 4, x, y, 0,
+                          static_cast<hbr_matrix>(matrix), full);
+}
 }

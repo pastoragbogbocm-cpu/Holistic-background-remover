@@ -66,6 +66,11 @@ object HbrNative {
     @JvmStatic external fun nativeCrop(
         src: ByteBuffer, sw: Int, sh: Int, rx: Int, ry: Int, rw: Int, rh: Int, dst: ByteBuffer, dw: Int, dh: Int,
     ): Int
+    @JvmStatic external fun nativeOverlay(
+        dy: ByteBuffer, dyStride: Int, du: ByteBuffer, dv: ByteBuffer, duvStride: Int, duvPix: Int,
+        dw: Int, dh: Int, rgba: ByteBuffer, ow: Int, oh: Int, ostride: Int, x: Int, y: Int,
+        premul: Boolean, matrix: Int, full: Boolean,
+    ): Int
     @JvmStatic external fun nativeFill(dst: ByteBuffer, w: Int, h: Int, yuv: Int): Int
     @JvmStatic external fun nativeBlur(img: ByteBuffer, w: Int, h: Int, amount: Float): Int
 

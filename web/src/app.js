@@ -1,4 +1,5 @@
 import { demux, summary, renderPreview, exportVideo, loadImageBitmap, videoElement } from './pipeline.js';
+import { PRESETS, HIGHLIGHTS, LANGUAGES, groupCues, editCue, transcribe } from './captions.js';
 
 const $ = (id) => document.getElementById(id);
 const SWATCHES = [0xff00b140, 0xff0047bb, 0xffffffff, 0xff000000, 0xff808080, 0xff2dd4bf, 0xfff59e0b, 0xffec4899];
@@ -8,7 +9,10 @@ const state = {
   kind: 'color', argb: SWATCHES[0], image: null, bgVideo: null, blur: 0.03,
   showOriginal: false, timeS: 0, rendering: false, again: false, abort: null, result: null,
   aspect: 'original', fit: false, placement: { scale: 1, panX: 0, panY: 0, fill: 0xff000000 },
+  cues: [], capOn: true, capStyle: { preset: 'pop', position: 'bottom', size: 1, textColor: 0xffffffff, highlightColor: HIGHLIGHTS[0], uppercase: false },
+  capAbort: null,
 };
+const captions = () => (state.cues.length ? { enabled: state.capOn, cues: state.cues, style: { ...state.capStyle } } : null);
 const SHAPES = [['original', 'Original'], ['9:16', '9:16'], ['1:1', '1:1'], ['4:5', '4:5'], ['16:9', '16:9']];
 const frame = () => ({ aspect: state.aspect, fit: state.fit });
 const sound = () => ({ music: state.music, musicVolume: +$('mvol').value, voiceVolume: +$('vvol').value, duck: $('duck').checked });
@@ -96,6 +100,7 @@ function updateKeeps() {
   const snd = state.music ? ' Sound: voice + music, re-encoded.' : (+$('vvol').value !== 1 ? ' Sound: voice level changed, re-encoded.' : '');
   updateKeepsBase();
   if (snd) $('keeps').textContent = $('keeps').textContent.replace(', original audio copied untouched.', '.') + snd;
+  if (state.cues?.length && state.capOn) $('keeps').textContent += ` Captions burned in (${state.cues.length}).`;
 }
 function updateKeepsBase() {
   if (state.aspect === 'original') {
@@ -168,6 +173,97 @@ $('musicDel').onclick = () => { state.music = null; $('musicFile').value = ''; d
 $('mvol').oninput = drawSound;
 $('vvol').oninput = drawSound;
 
+// ---------- captions
+$('capLang').innerHTML = LANGUAGES.map(([c, n]) => `<option value="${c}">${n}</option>`).join('');
+$('capPresets').innerHTML = PRESETS.map((p) => `<button class="preset" data-p="${p}"><b>Aa</b>${p[0].toUpperCase() + p.slice(1)}</button>`).join('');
+$('capHi').innerHTML = HIGHLIGHTS.map((c) => `<button class="sw" style="background:${hex(c)}" data-c="${c}" aria-label="Highlight ${hex(c)}"></button>`).join('');
+const fmtT = (ms) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
+function drawCaptions() {
+  const st = state.capStyle, have = state.cues.length > 0;
+  $('capOpts').classList.toggle('hidden', !have);
+  $('capGo').textContent = have ? 'Generate again' : 'Generate captions';
+  $('capGo').disabled = !state.meta || !!state.capAbort;
+  $('capOn').checked = state.capOn;
+  for (const b of $('capPresets').querySelectorAll('.preset')) {
+    const p = b.dataset.p, on = p === st.preset;
+    b.setAttribute('aria-pressed', String(on));
+    const mark = b.querySelector('b');
+    mark.style.background = p === 'box' ? 'rgba(0,0,0,.75)' : 'none';
+    mark.style.color = p === 'clean' ? '#fff' : hex(st.highlightColor);
+    mark.style.textShadow = p === 'clean' ? '0 1px 4px #000' : p === 'box' ? 'none' : '-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000';
+  }
+  for (const b of $('capPos').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.p === st.position));
+  for (const b of $('capHi').querySelectorAll('.sw')) b.setAttribute('aria-pressed', String(+b.dataset.c === st.highlightColor));
+  $('capSize').value = st.size;
+  $('capSizeV').textContent = Math.round(st.size * 100) + '%';
+  $('capCaps').checked = st.uppercase;
+  $('capCount').textContent = have ? `(${state.cues.length} captions)` : '';
+  updateKeeps();
+}
+function drawCueList() {
+  $('capList').innerHTML = state.cues.map((c, i) =>
+    `<div class="cue"><time data-i="${i}" title="Jump here">${fmtT(c.t0)}</time><input data-i="${i}" value="${c.words.map((w) => w.w).join(' ').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}" aria-label="Caption at ${fmtT(c.t0)}"></div>`).join('');
+}
+$('capList').addEventListener('change', (e) => {
+  const i = +e.target.dataset.i;
+  if (!e.target.matches('input')) return;
+  const next = editCue(state.cues[i], e.target.value);
+  if (next) state.cues[i] = next; else state.cues.splice(i, 1);
+  drawCueList();
+  drawCaptions();
+  schedule(true);
+});
+$('capList').addEventListener('click', (e) => {
+  const t = e.target.closest('time');
+  if (!t || !state.meta) return;
+  const c = state.cues[+t.dataset.i];
+  state.timeS = Math.min(state.meta.durationS - 0.05, (c.t0 + Math.min(300, (c.t1 - c.t0) / 2)) / 1000);
+  $('time').value = Math.round((state.timeS / Math.max(0.05, state.meta.durationS - 0.05)) * 1000);
+  showView(false);
+  schedule(true);
+});
+$('capPresets').onclick = (e) => { const b = e.target.closest('.preset'); if (b) { state.capStyle.preset = b.dataset.p; drawCaptions(); schedule(true); } };
+$('capPos').onclick = (e) => { const b = e.target.closest('button'); if (b) { state.capStyle.position = b.dataset.p; drawCaptions(); schedule(true); } };
+$('capHi').onclick = (e) => { const b = e.target.closest('.sw'); if (b) { state.capStyle.highlightColor = +b.dataset.c; drawCaptions(); schedule(true); } };
+$('capSize').oninput = (e) => { state.capStyle.size = +e.target.value; drawCaptions(); schedule(); };
+$('capCaps').onchange = (e) => { state.capStyle.uppercase = e.target.checked; drawCaptions(); schedule(true); };
+$('capOn').onchange = (e) => { state.capOn = e.target.checked; drawCaptions(); schedule(true); };
+$('capCancel').onclick = () => state.capAbort?.abort();
+$('capGo').onclick = async () => {
+  if (!state.file || state.capAbort) return;
+  setErr('');
+  state.capAbort = new AbortController();
+  $('capProg').classList.remove('hidden');
+  $('capBar').value = 0;
+  drawCaptions();
+  const label = { audio: 'Reading the sound…', model: 'Loading the speech model', listen: 'Listening' };
+  try {
+    const words = await transcribe(state.file, $('capLang').value, {
+      signal: state.capAbort.signal,
+      onProgress: (stage, pct) => {
+        const total = stage === 'audio' ? 0 : stage === 'model' ? pct * 0.1 : 10 + pct * 0.9;
+        $('capBar').value = total;
+        $('capText').textContent = stage === 'audio' ? label.audio : `${label[stage]} · ${pct}%`;
+      },
+    });
+    state.cues = groupCues(words);
+    state.capOn = true;
+    $('capHint').textContent = state.cues.length
+      ? 'Check the words below; tap a time to see it on the preview.'
+      : 'No speech was found in this video.';
+    drawCueList();
+    if (state.cues.length) $('time').dispatchEvent(new Event('input'));
+  } catch (e) {
+    if (e.name !== 'AbortError') setErr('Captions failed: ' + (e.message || e));
+  } finally {
+    state.capAbort = null;
+    $('capProg').classList.add('hidden');
+    drawCaptions();
+    schedule(true);
+  }
+};
+drawCaptions();
+
 // ---------- background kind
 function setKind(k) {
   state.kind = k;
@@ -230,6 +326,9 @@ async function openVideo(file) {
     $('drop').classList.add('hidden');
     $('scrub').classList.remove('hidden');
     $('meta').textContent = `${file.name} · ${summary(meta)}`;
+    state.cues = [];
+    drawCueList();
+    drawCaptions();
     drawShapes();
     $('export').disabled = false;
     $('result').classList.add('hidden');
@@ -289,6 +388,7 @@ async function render() {
       await renderPreview({
         videoEl: state.videoEl, canvas: $('out'), timeS: state.timeS, bg: background(),
         settings: settings(), landscape: state.meta.displayWidth > state.meta.displayHeight, frame: frame(),
+        captions: captions(),
       });
       if (!state.showOriginal) $('out').classList.remove('hidden');
       setErr('');
@@ -314,7 +414,7 @@ $('export').onclick = async () => {
   try {
     const r = await exportVideo({
       meta: state.meta, bg: background(), settings: settings(), signal: state.abort.signal, frame: frame(),
-      sound: sound(), file: state.file,
+      sound: sound(), file: state.file, captions: captions(),
       onProgress: ({ fraction, frames, total, fps }) => {
         $('pbar').value = fraction;
         const left = fps > 0 ? Math.round((total - frames) / fps) : 0;
@@ -366,4 +466,4 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http') && wind
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
-window.__hbr = { openVideo, state, schedule, drawShapes, drawPlacement }; // test hook
+window.__hbr = { openVideo, state, schedule, drawShapes, drawPlacement, drawCaptions, drawCueList, groupCues }; // test hook

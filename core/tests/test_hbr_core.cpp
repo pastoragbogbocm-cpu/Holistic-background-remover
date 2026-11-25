@@ -393,10 +393,29 @@ static void test_layout() {
   CHECK(b.y[10 * 64 + 10] == 100 && b.uv[10] == 120, "blur changed a flat image");
 }
 
+static void test_overlay() {
+  Frame f(32, 32);
+  std::fill(f.y.begin(), f.y.end(), 16);
+  std::fill(f.uv.begin(), f.uv.end(), 128);
+  hbr_yuv v = f.view();
+  // 8x8 opaque white square at (4,4), half-transparent red at (20,20)
+  std::vector<uint8_t> img(8 * 8 * 4, 255);
+  hbr_overlay_rgba(&v, 32, 32, img.data(), 8, 8, 32, 4, 4, 0, HBR_MATRIX_BT709, 0);
+  CHECK(f.y[6 * 32 + 6] == 235, "white overlay luma %d", f.y[6 * 32 + 6]);
+  CHECK(f.y[2 * 32 + 2] == 16, "outside overlay changed");
+  for (size_t i = 0; i < img.size(); i += 4) { img[i] = 128; img[i + 1] = 0; img[i + 2] = 0; img[i + 3] = 128; }
+  hbr_overlay_rgba(&v, 32, 32, img.data(), 8, 8, 32, 20, 20, 1, HBR_MATRIX_BT709, 0);  // premultiplied red @50%
+  int vv = f.uv[(22 / 2) * 32 + (22 / 2) * 2 + 1];
+  CHECK(vv > 160, "red overlay should raise Cr, got %d", vv);
+  // clipping: partly outside must not crash or write outside
+  hbr_overlay_rgba(&v, 32, 32, img.data(), 8, 8, 32, 28, -4, 1, HBR_MATRIX_BT709, 0);
+}
+
 int main() {
   test_decontamination();
   test_motion_sharpen();
   test_layout();
+  test_overlay();
   test_rotate();
   test_full_person_is_lossless();
   test_no_person_is_background();

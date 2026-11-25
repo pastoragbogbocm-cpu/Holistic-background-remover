@@ -1086,6 +1086,58 @@ int hbr_blur_yuv(hbr_yuv* img, int w, int h, float amount) {
   return HBR_OK;
 }
 
+int hbr_overlay_rgba(hbr_yuv* dst, int dw, int dh, const uint8_t* rgba, int ow,
+                     int oh, int ostride, int x, int y, int premultiplied,
+                     hbr_matrix m, int full_range) {
+  if (!dst || !rgba || ow < 1 || oh < 1) return HBR_ERR_ARG;
+  int x0 = std::max(0, x), y0 = std::max(0, y);
+  int x1 = std::min(dw, x + ow), y1 = std::min(dh, y + oh);
+  if (x1 <= x0 || y1 <= y0) return HBR_OK;
+  auto px = [&](int xx, int yy, float* r, float* g, float* b, float* a) {
+    const uint8_t* p = rgba + static_cast<size_t>(yy - y) * ostride + static_cast<size_t>(xx - x) * 4;
+    *a = p[3] / 255.f;
+    float k = 1.f / 255.f;
+    if (premultiplied && p[3] > 0) k = 1.f / p[3];
+    *r = p[0] * k;
+    *g = p[1] * k;
+    *b = p[2] * k;
+  };
+  for (int yy = y0; yy < y1; ++yy) {
+    uint8_t* row = dst->y + static_cast<size_t>(yy) * dst->y_stride;
+    for (int xx = x0; xx < x1; ++xx) {
+      float r, g, b, a;
+      px(xx, yy, &r, &g, &b, &a);
+      if (a <= 0.f) continue;
+      float fy, fu, fv;
+      rgbf_to_yuv(clampf(r, 0.f, 1.f), clampf(g, 0.f, 1.f), clampf(b, 0.f, 1.f), m, full_range, &fy, &fu, &fv);
+      row[xx] = to_u8(row[xx] + a * (fy - row[xx]));
+    }
+  }
+  for (int cy = y0 / 2; cy < (y1 + 1) / 2; ++cy)
+    for (int cx = x0 / 2; cx < (x1 + 1) / 2; ++cx) {
+      float sr = 0, sg = 0, sb = 0, sa = 0;
+      for (int dy = 0; dy < 2; ++dy)
+        for (int dx = 0; dx < 2; ++dx) {
+          int xx = 2 * cx + dx, yy = 2 * cy + dy;
+          if (xx < x0 || xx >= x1 || yy < y0 || yy >= y1) continue;
+          float r, g, b, a;
+          px(xx, yy, &r, &g, &b, &a);
+          sr += r * a;
+          sg += g * a;
+          sb += b * a;
+          sa += a;
+        }
+      if (sa <= 0.f) continue;
+      float fy, fu, fv;
+      rgbf_to_yuv(clampf(sr / sa, 0.f, 1.f), clampf(sg / sa, 0.f, 1.f), clampf(sb / sa, 0.f, 1.f), m, full_range, &fy, &fu, &fv);
+      float a = sa / 4.f;
+      size_t o = static_cast<size_t>(cy) * dst->uv_stride + static_cast<size_t>(cx) * dst->uv_pixel_stride;
+      dst->u[o] = to_u8(dst->u[o] + a * (fu - dst->u[o]));
+      dst->v[o] = to_u8(dst->v[o] + a * (fv - dst->v[o]));
+    }
+  return HBR_OK;
+}
+
 namespace {
 // dst(x', y') <- src(x, y) for a clockwise rotation, on one plane.
 void rotate_plane(const uint8_t* s, int ss, int sp, int sw, int sh, uint8_t* d,

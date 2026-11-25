@@ -30,7 +30,12 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
-    // On-device tests run against the shrunk release build, like the APK we ship.
+    // Models are memory-mapped / copied straight from the APK.
+    androidResources {
+        noCompress += listOf("tflite", "bin")
+    }
+
+    // On-device tests run against the release build, like the APK we ship.
     testBuildType = "release"
 
     buildTypes {

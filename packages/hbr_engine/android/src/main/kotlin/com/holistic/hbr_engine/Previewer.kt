@@ -38,6 +38,7 @@ class Previewer(private val context: Context) : AutoCloseable {
             BackgroundSource.create(background, cw, ch, 0, matrix, true, previewTimeMs = timeMs).use { bg ->
                 Compositor(engine, layout, matrix, true).composeInto(src, out, bg.next())
             }
+            CaptionRenderer.from(settings, cw, ch, 0, matrix, true)?.drawInto(timeMs, out)
         }
         val outRgba = java.nio.ByteBuffer.allocateDirect(cw * ch * 4)
         HbrNative.nativeI420ToRgba(out.buffer, cw, ch, outRgba, matrix, true)

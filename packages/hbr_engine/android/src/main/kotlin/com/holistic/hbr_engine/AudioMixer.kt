@@ -39,7 +39,7 @@ data class AudioMix(
 /**
  * Decodes one audio track to interleaved 16-bit PCM, in chunks.
  */
-private class PcmReader(path: String, track: Int?) : AutoCloseable {
+internal class PcmReader(path: String, track: Int?) : AutoCloseable {
     private val ex = MediaExtractor().apply { setDataSource(path) }
     private val trackIndex: Int = track ?: (0 until ex.trackCount).firstOrNull {
         ex.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
@@ -132,7 +132,7 @@ private class PcmReader(path: String, track: Int?) : AutoCloseable {
 }
 
 /** A PCM source at a fixed output rate and channel count (linear resampling, optional looping). */
-private class Stream(private val open: () -> PcmReader, private val outRate: Int, private val outCh: Int, private val loop: Boolean) : AutoCloseable {
+internal class Stream(private val open: () -> PcmReader, private val outRate: Int, private val outCh: Int, private val loop: Boolean) : AutoCloseable {
     private var reader = open().also { it.prime() }
     private var inBuf = ShortArray(4096)
     private var inFrames = 0

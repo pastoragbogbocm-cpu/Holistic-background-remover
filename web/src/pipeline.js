@@ -10,6 +10,7 @@ import { createFile, DataStream, Endianness, MP4BoxBuffer } from 'mp4box';
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
 import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
 import { Engine, loadCore, matrixOf, i420Size } from './engine.js';
+import { CaptionPainter } from './captions.js';
 
 const models = {};
 async function modelBuffer(landscape) {
@@ -295,7 +296,7 @@ function composeFrame(eng, L, spec, canvasBuf, outBuf) {
 // ---------------------------------------------------------------- preview
 
 /** One processed frame, upright, drawn into `canvas`. */
-export async function renderPreview({ videoEl, canvas, timeS, bg, settings, landscape, frame }) {
+export async function renderPreview({ videoEl, canvas, timeS, bg, settings, landscape, frame, captions }) {
   const M = await loadCore();
   await seek(videoEl, timeS);
   const maxSide = 960;
@@ -321,6 +322,11 @@ export async function renderPreview({ videoEl, canvas, timeS, bg, settings, land
     try {
       const next = await backgroundFor(eng, bg, 0, 1, true, L, L.identity ? eng.bg : canvasBuf);
       const out = composeFrame(eng, L, await next(timeS), canvasBuf, outBuf);
+      if (captions?.enabled) {
+        const cp = new CaptionPainter(captions, L.CW, L.CH, 0);
+        cp.draw(M, out, L.CW, L.CH, timeS * 1000, 1, true);
+        cp.free(M);
+      }
       canvas.width = L.CW;
       canvas.height = L.CH;
       canvas.getContext('2d').putImageData(eng.toRgba(out, L.CW, L.CH, 1, true), 0, 0);
@@ -465,7 +471,7 @@ async function pickEncoder(meta, W, H) {
  * Full export. onProgress({fraction, frames, total, fps}). Returns
  * {blob, warnings, encoder}. `signal` cancels.
  */
-export async function exportVideo({ meta, bg, settings, onProgress, signal, frame, sound, file }) {
+export async function exportVideo({ meta, bg, settings, onProgress, signal, frame, sound, file, captions }) {
   const M = await loadCore();
   const W = meta.width, H = meta.height, rot = meta.rotation;
   const warnings = [];
@@ -515,7 +521,8 @@ export async function exportVideo({ meta, bg, settings, onProgress, signal, fram
     codedWidth: W, codedHeight: H, description: meta.description, hardwareAcceleration: 'no-preference',
   });
 
-  let matrix = 1, full = false, colorSpace = null, nextBg = null;
+  let matrix = 1, full = false, colorSpace = null, nextBg = null, firstTs = null;
+  const painter = captions?.enabled && captions.cues?.length ? new CaptionPainter(captions, L.dispW, L.dispH, rot) : null;
   const total = meta.videoSamples.length;
   const keyEvery = Math.max(1, Math.round(meta.fps));
   let done = 0;
@@ -573,6 +580,10 @@ export async function exportVideo({ meta, bg, settings, onProgress, signal, fram
       const mask = personMask(seg.segmentForVideo(segCanvas, tsMs));
       eng.refine(mask.data, mask.w, mask.h, rot);
       const outPtr = composeFrame(eng, L, await nextBg(ts / 1e6), canvasBuf, outBuf);
+      if (painter) {
+        firstTs ??= ts;
+        painter.draw(M, outPtr, CW, CH, (ts - firstTs) / 1000, matrix, full);
+      }
 
       while (encoder.encodeQueueSize > 4) await tick();
       const out = new VideoFrame(eng.view(outPtr, i420Size(CW, CH)), {
@@ -643,6 +654,7 @@ export async function exportVideo({ meta, bg, settings, onProgress, signal, fram
     if (encoder.state !== 'closed') encoder.close();
     if (canvasBuf) M._hbrw_free(canvasBuf);
     if (outBuf) M._hbrw_free(outBuf);
+    painter?.free(M);
     eng.destroy();
   }
 }

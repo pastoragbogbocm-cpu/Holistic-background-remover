@@ -19,6 +19,9 @@ class HbrEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventCha
     private val main = Handler(Looper.getMainLooper())
     private val exportExecutor = Executors.newSingleThreadExecutor()
     private val previewExecutor = Executors.newSingleThreadExecutor()
+    private val speechExecutor = Executors.newSingleThreadExecutor()
+    private val speechCancel = AtomicBoolean(false)
+    private var transcriber: Transcriber? = null
     private var sink: EventChannel.EventSink? = null
     private val cancelFlag = AtomicBoolean(false)
     private var previewer: Previewer? = null
@@ -50,6 +53,33 @@ class HbrEnginePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventCha
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
+            "transcribe" -> {
+                speechCancel.set(false)
+                val jobId = call.argument<String>("jobId")!!
+                speechExecutor.execute {
+                    try {
+                        val path = call.argument<String>("path")!!
+                        val meta = VideoProbe.probe(path)
+                        emit(mapOf("jobId" to jobId, "fraction" to 0.02, "stage" to "audio"))
+                        val pcm = Transcriber.loadAudio(path, meta.audioTrack, meta.durationUs)
+                        val t = transcriber ?: Transcriber.open(context).also { transcriber = it }
+                        val json = t.transcribe(pcm, call.argument<String>("language") ?: "en") { pct ->
+                            emit(mapOf("jobId" to jobId, "fraction" to 0.05 + 0.95 * pct / 100.0, "stage" to "speech"))
+                            speechCancel.get()
+                        }
+                        main.post {
+                            if (json == null) result.error("cancelled", "cancelled", null) else result.success(json)
+                        }
+                    } catch (e: Throwable) {
+                        Log.e("HbrEngine", "transcribe failed", e)
+                        main.post { result.error("transcribe_failed", e.message ?: e.javaClass.simpleName, null) }
+                    }
+                }
+            }
+            "cancelTranscribe" -> {
+                speechCancel.set(true)
+                result.success(null)
+            }
             "probe" -> previewExecutor.execute {
                 runCatching { VideoProbe.probe(call.argument<String>("path")!!).toMap() }
                     .fold({ m -> main.post { result.success(m) } },
