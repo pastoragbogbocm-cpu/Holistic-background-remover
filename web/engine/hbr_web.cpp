@@ -138,4 +138,20 @@ EMSCRIPTEN_KEEPALIVE int hbrw_overlay_i420(uint8_t* dst, int w, int h, uint8_t* 
   return hbr_overlay_rgba(&d, w, h, rgba, ow, oh, ow * 4, x, y, 0,
                           static_cast<hbr_matrix>(matrix), full);
 }
+
+// ---- outline around the person, transitions, slow zoom ----
+EMSCRIPTEN_KEEPALIVE int hbrw_outline(hbr_engine* e, uint8_t* dst, int w, int h, int yuv, float width, int glow) {
+  hbr_yuv d = i420(dst, w, h);
+  return hbr_draw_outline(e, &d, w, h, (yuv >> 16) & 255, (yuv >> 8) & 255, yuv & 255, width, glow);
+}
+
+EMSCRIPTEN_KEEPALIVE int hbrw_transition(uint8_t* a, uint8_t* b, uint8_t* out, int w, int h, int rot, int type, float t) {
+  hbr_yuv A = i420(a, w, h), B = i420(b, w, h), O = i420(out, w, h);
+  return hbr_transition(&A, &B, &O, w, h, rot, type, t);
+}
+
+EMSCRIPTEN_KEEPALIVE int hbrw_zoom(uint8_t* src, uint8_t* dst, int w, int h, float scale) {
+  hbr_yuv S = i420(src, w, h), D = i420(dst, w, h);
+  return hbr_zoom_yuv(&S, &D, w, h, scale);
+}
 }

@@ -264,4 +264,35 @@ JNI_FN(jint, nativeRgbToYuv)(JNIEnv*, jclass, jint r, jint g, jint b,
   return (y << 16) | (u << 8) | v;
 }
 
+// Outline around the person, drawn onto planes of the engine's size.
+JNI_FN(jint, nativeOutline)(JNIEnv* env, jclass, jlong handle, jobject dy, jint dyStride,
+                           jobject du, jobject dv, jint duvStride, jint duvPix,
+                           jint w, jint h, jint yuv, jfloat width, jboolean glow) {
+  auto* e = reinterpret_cast<hbr_engine*>(handle);
+  hbr_yuv d{addr(env, dy), dyStride, addr(env, du), addr(env, dv), duvStride, duvPix};
+  if (!e || !d.y || !d.u || !d.v) return HBR_ERR_ARG;
+  return hbr_draw_outline(e, &d, w, h, (yuv >> 16) & 0xff, (yuv >> 8) & 0xff, yuv & 0xff,
+                          width, glow ? 1 : 0);
+}
+
+// Animated change from tight I420 a to b (t 0..1) into out.
+JNI_FN(jint, nativeTransition)(JNIEnv* env, jclass, jobject a, jobject b, jobject out,
+                              jint w, jint h, jint rotation, jint type, jfloat t) {
+  uint8_t* pa = addr(env, a);
+  uint8_t* pb = addr(env, b);
+  uint8_t* po = addr(env, out);
+  if (!pa || !pb || !po) return HBR_ERR_ARG;
+  hbr_yuv va = i420(pa, w, h), vb = i420(pb, w, h), vo = i420(po, w, h);
+  return hbr_transition(&va, &vb, &vo, w, h, rotation, type, t);
+}
+
+JNI_FN(jint, nativeZoom)(JNIEnv* env, jclass, jobject src, jobject dst, jint w, jint h,
+                        jfloat scale) {
+  uint8_t* s = addr(env, src);
+  uint8_t* d = addr(env, dst);
+  if (!s || !d) return HBR_ERR_ARG;
+  hbr_yuv vs = i420(s, w, h), vd = i420(d, w, h);
+  return hbr_zoom_yuv(&vs, &vd, w, h, scale);
+}
+
 }  // extern "C"

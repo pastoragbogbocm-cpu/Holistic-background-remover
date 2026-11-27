@@ -1210,3 +1210,273 @@ int hbr_yuv_to_rgba(const hbr_yuv* src, int w, int h, uint8_t* rgba,
 }
 
 }  // extern "C"
+
+
+// ---------------------------------------------------------------- outline
+namespace {
+// 1-D squared Euclidean distance transform (Felzenszwalb & Huttenlocher).
+void edt_1d(const double* f, double* d, int n, int* v, double* z) {
+  int k = 0;
+  v[0] = 0;
+  z[0] = -1e30;
+  z[1] = 1e30;
+  for (int q = 1; q < n; ++q) {
+    double s = ((f[q] + double(q) * q) - (f[v[k]] + double(v[k]) * v[k])) / (2.0 * (q - v[k]));
+    while (s <= z[k]) {
+      --k;
+      s = ((f[q] + double(q) * q) - (f[v[k]] + double(v[k]) * v[k])) / (2.0 * (q - v[k]));
+    }
+    ++k;
+    v[k] = q;
+    z[k] = s;
+    z[k + 1] = 1e30;
+  }
+  k = 0;
+  for (int q = 0; q < n; ++q) {
+    while (z[k + 1] < q) ++k;
+    double dq = q - v[k];
+    d[q] = dq * dq + f[v[k]];
+  }
+}
+}  // namespace
+
+int hbr_draw_outline(hbr_engine* e, hbr_yuv* dst, int w, int h, uint8_t cy,
+                     uint8_t cu, uint8_t cv, float width, int glow) {
+  if (!e || !dst || w != e->W || h != e->H || e->alpha.empty()) return HBR_ERR_ARG;
+  // distance to the person on a working grid (fast), then sampled up
+  float r_full = std::max(1.f, width * std::min(w, h));
+  int f = std::max(1, static_cast<int>(r_full / 6.f));  // keep >= 6 cells per radius
+  f = std::min(f, 4);
+  int gw = (w + f - 1) / f, gh = (h + f - 1) / f;
+  const double INF = 1e10;
+  std::vector<double> g(static_cast<size_t>(gw) * gh);
+  for (int y = 0; y < gh; ++y)
+    for (int x = 0; x < gw; ++x) {
+      int m = 0;
+      for (int yy = y * f; yy < std::min(h, (y + 1) * f); ++yy)
+        for (int xx = x * f; xx < std::min(w, (x + 1) * f); ++xx)
+          m = std::max(m, static_cast<int>(e->alpha[static_cast<size_t>(yy) * w + xx]));
+      g[static_cast<size_t>(y) * gw + x] = m >= 128 ? 0.0 : INF;
+    }
+  int n = std::max(gw, gh);
+  std::vector<double> fin(n), fout(n), z(n + 1);
+  std::vector<int> v(n);
+  for (int x = 0; x < gw; ++x) {
+    for (int y = 0; y < gh; ++y) fin[y] = g[static_cast<size_t>(y) * gw + x];
+    edt_1d(fin.data(), fout.data(), gh, v.data(), z.data());
+    for (int y = 0; y < gh; ++y) g[static_cast<size_t>(y) * gw + x] = fout[y];
+  }
+  for (int y = 0; y < gh; ++y) {
+    double* row = &g[static_cast<size_t>(y) * gw];
+    std::copy(row, row + gw, fin.begin());
+    edt_1d(fin.data(), fout.data(), gw, v.data(), z.data());
+    std::copy(fout.begin(), fout.begin() + gw, row);
+  }
+  std::vector<float> gd(g.size());
+  for (size_t i = 0; i < g.size(); ++i) gd[i] = static_cast<float>(std::sqrt(g[i]) * f);  // full-res pixels
+  float reach = glow ? 2.2f * r_full : r_full + 1.f;
+  auto dist = [&](float x, float y) {  // bilinear on the grid
+    float gx = clampf(x / f - 0.5f, 0.f, gw - 1.f), gy = clampf(y / f - 0.5f, 0.f, gh - 1.f);
+    int x0 = static_cast<int>(gx), y0 = static_cast<int>(gy);
+    int x1 = std::min(gw - 1, x0 + 1), y1 = std::min(gh - 1, y0 + 1);
+    float tx = gx - x0, ty = gy - y0;
+    const float* r0 = &gd[static_cast<size_t>(y0) * gw];
+    const float* r1 = &gd[static_cast<size_t>(y1) * gw];
+    return (r0[x0] * (1 - tx) + r0[x1] * tx) * (1 - ty) + (r1[x0] * (1 - tx) + r1[x1] * tx) * ty;
+  };
+  auto weight = [&](float d) {
+    if (d >= reach) return 0.f;
+    if (glow) {
+      float q = d / r_full;
+      return 0.95f * std::exp(-1.6f * q * q);
+    }
+    return clampf(r_full + 0.5f - d, 0.f, 1.f);
+  };
+  std::vector<uint8_t> ow(static_cast<size_t>(w) * h, 0);
+  int th = hw_threads();
+  parallel_for(h, th, [&](int y0, int y1) {
+    for (int y = y0; y < y1; ++y) {
+      uint8_t* row = dst->y + static_cast<size_t>(y) * dst->y_stride;
+      const uint8_t* ar = &e->alpha[static_cast<size_t>(y) * w];
+      for (int x = 0; x < w; ++x) {
+        if (ar[x] >= 250) continue;
+        float o = weight(dist(x + 0.5f, y + 0.5f)) * (1.f - ar[x] / 255.f);
+        if (o <= 0.002f) continue;
+        ow[static_cast<size_t>(y) * w + x] = to_u8(o * 255.f);
+        row[x] = to_u8(row[x] + o * (cy - row[x]));
+      }
+    }
+  });
+  int cw = (w + 1) / 2, ch = (h + 1) / 2;
+  for (int y = 0; y < ch; ++y)
+    for (int x = 0; x < cw; ++x) {
+      int s = 0, c = 0;
+      for (int dy = 0; dy < 2; ++dy)
+        for (int dx = 0; dx < 2; ++dx) {
+          int xx = 2 * x + dx, yy = 2 * y + dy;
+          if (xx < w && yy < h) { s += ow[static_cast<size_t>(yy) * w + xx]; ++c; }
+        }
+      if (!s) continue;
+      float o = s / (255.f * c);
+      size_t i = static_cast<size_t>(y) * dst->uv_stride + static_cast<size_t>(x) * dst->uv_pixel_stride;
+      dst->u[i] = to_u8(dst->u[i] + o * (cu - dst->u[i]));
+      dst->v[i] = to_u8(dst->v[i] + o * (cv - dst->v[i]));
+    }
+  return HBR_OK;
+}
+
+// ---------------------------------------------------------------- transitions
+namespace {
+inline float ease(float t) { t = clampf(t, 0.f, 1.f); return t * t * (3.f - 2.f * t); }
+
+struct Plane {
+  const uint8_t* p;
+  int stride, step, w, h;
+  float at(float x, float y) const {  // bilinear, clamped; x,y in pixels
+    x = clampf(x - 0.5f, 0.f, w - 1.f);
+    y = clampf(y - 0.5f, 0.f, h - 1.f);
+    int x0 = static_cast<int>(x), y0 = static_cast<int>(y);
+    int x1 = std::min(w - 1, x0 + 1), y1 = std::min(h - 1, y0 + 1);
+    float tx = x - x0, ty = y - y0;
+    auto px = [&](int xx, int yy) { return static_cast<float>(p[static_cast<size_t>(yy) * stride + static_cast<size_t>(xx) * step]); };
+    return (px(x0, y0) * (1 - tx) + px(x1, y0) * tx) * (1 - ty) + (px(x0, y1) * (1 - tx) + px(x1, y1) * tx) * ty;
+  }
+};
+
+// normalised stored <-> display coordinates for a clockwise display rotation
+inline void to_disp(int rot, float sx, float sy, float* dx, float* dy) {
+  switch (rot) {
+    case 90: *dx = 1 - sy; *dy = sx; break;
+    case 180: *dx = 1 - sx; *dy = 1 - sy; break;
+    case 270: *dx = sy; *dy = 1 - sx; break;
+    default: *dx = sx; *dy = sy;
+  }
+}
+inline void to_stored(int rot, float dx, float dy, float* sx, float* sy) {
+  switch (rot) {
+    case 90: *sx = dy; *sy = 1 - dx; break;
+    case 180: *sx = 1 - dx; *sy = 1 - dy; break;
+    case 270: *sx = 1 - dy; *sy = dx; break;
+    default: *sx = dx; *sy = dy;
+  }
+}
+}  // namespace
+
+int hbr_transition(const hbr_yuv* a, const hbr_yuv* b, hbr_yuv* out, int w,
+                   int h, int rotation, int type, float t) {
+  if (!a || !b || !out || w < 2 || h < 2) return HBR_ERR_ARG;
+  rotation = ((rotation % 360) + 360) % 360;
+  float e = ease(t);
+  bool side = rotation % 180 != 0;
+  float dW = side ? h : w, dH = side ? w : h;  // display size in pixels
+  float black[3] = {16.f, 128.f, 128.f}, white[3] = {235.f, 128.f, 128.f};
+  int th = hw_threads();
+  for (int pl = 0; pl < 3; ++pl) {
+    int pw = pl ? (w + 1) / 2 : w, ph = pl ? (h + 1) / 2 : h;
+    auto mk = [&](const hbr_yuv* s) {
+      return pl == 0 ? Plane{s->y, s->y_stride, 1, pw, ph}
+                     : Plane{pl == 1 ? s->u : s->v, s->uv_stride, s->uv_pixel_stride, pw, ph};
+    };
+    Plane A = mk(a), B = mk(b);
+    uint8_t* op = pl == 0 ? out->y : (pl == 1 ? out->u : out->v);
+    int ostride = pl == 0 ? out->y_stride : out->uv_stride;
+    int ostep = pl == 0 ? 1 : out->uv_pixel_stride;
+    parallel_for(ph, th, [&](int y0, int y1) {
+      for (int y = y0; y < y1; ++y)
+        for (int x = 0; x < pw; ++x) {
+          float sx = (x + 0.5f) / pw, sy = (y + 0.5f) / ph, dx, dy;
+          to_disp(rotation, sx, sy, &dx, &dy);
+          // sample a plane at display coords (dx, dy)
+          auto S = [&](const Plane& P, float ux, float uy) {
+            float qx, qy;
+            to_stored(rotation, ux, uy, &qx, &qy);
+            return P.at(qx * pw, qy * ph);
+          };
+          float va, vb, r;
+          switch (type) {
+            case HBR_TR_FADE:
+              r = S(A, dx, dy) * (1 - e) + S(B, dx, dy) * e;
+              break;
+            case HBR_TR_DIP_BLACK: {
+              float k = e < 0.5f ? e * 2 : (1 - e) * 2;  // 0 -> 1 -> 0
+              float base = e < 0.5f ? S(A, dx, dy) : S(B, dx, dy);
+              r = base * (1 - k) + black[pl] * k;
+              break;
+            }
+            case HBR_TR_FLASH: {
+              float k = std::exp(-std::pow((t - 0.5f) / 0.16f, 2.f));
+              float base = S(A, dx, dy) * (1 - e) + S(B, dx, dy) * e;
+              r = base * (1 - k) + white[pl] * k;
+              break;
+            }
+            case HBR_TR_SLIDE:  // b slides in from the right over a
+              r = dx >= 1 - e ? S(B, dx - (1 - e), dy) : S(A, dx, dy) * (1 - 0.35f * e);
+              break;
+            case HBR_TR_PUSH:  // a is pushed out to the left by b
+              r = dx + e >= 1 ? S(B, dx + e - 1, dy) : S(A, dx + e, dy);
+              break;
+            case HBR_TR_SLIDE_UP:
+              r = dy >= 1 - e ? S(B, dx, dy - (1 - e)) : S(A, dx, dy) * (1 - 0.35f * e);
+              break;
+            case HBR_TR_ZOOM_IN: {  // a rushes towards the viewer and fades into b
+              float s = 1 + 1.2f * e;
+              va = S(A, 0.5f + (dx - 0.5f) / s, 0.5f + (dy - 0.5f) / s);
+              float k = ease(clampf((t - 0.25f) / 0.6f, 0, 1));
+              r = va * (1 - k) + S(B, dx, dy) * k;
+              break;
+            }
+            case HBR_TR_ZOOM_OUT: {  // b arrives from close up and settles
+              float s = 1 + 0.9f * (1 - e);
+              vb = S(B, 0.5f + (dx - 0.5f) / s, 0.5f + (dy - 0.5f) / s);
+              float k = ease(clampf(t / 0.55f, 0, 1));
+              r = S(A, dx, dy) * (1 - k) + vb * k;
+              break;
+            }
+            case HBR_TR_CIRCLE: {  // b grows from the centre in a soft circle
+              float px = (dx - 0.5f) * dW, py = (dy - 0.5f) * dH;
+              float maxr = 0.5f * std::sqrt(dW * dW + dH * dH);
+              float soft = 0.03f * maxr + 1, rad = e * (maxr + soft);
+              float k = clampf((rad - std::sqrt(px * px + py * py)) / soft, 0, 1);
+              r = S(A, dx, dy) * (1 - k) + S(B, dx, dy) * k;
+              break;
+            }
+            case HBR_TR_WIPE: {  // soft diagonal sweep
+              float d = (dx * dW + dy * dH) / (dW + dH);  // 0..1 along the diagonal
+              float soft = 0.08f, pos = e * (1 + soft) - soft;
+              float k = clampf((pos + soft - d) / soft, 0, 1);
+              r = S(A, dx, dy) * (1 - k) + S(B, dx, dy) * k;
+              break;
+            }
+            case HBR_TR_SPIN: {  // a spins away into the distance, b behind it
+              float ang = 1.6f * e, s = 1 - 0.85f * e;
+              float px = (dx - 0.5f) * dW, py = (dy - 0.5f) * dH;
+              float c = std::cos(-ang), sn = std::sin(-ang);
+              float qx = (px * c - py * sn) / s / dW + 0.5f, qy = (px * sn + py * c) / s / dH + 0.5f;
+              vb = S(B, dx, dy) * (0.6f + 0.4f * e);
+              if (qx >= 0 && qx <= 1 && qy >= 0 && qy <= 1) {
+                float k = clampf((t - 0.7f) / 0.3f, 0, 1);
+                r = S(A, qx, qy) * (1 - k) + S(B, dx, dy) * k;
+              } else {
+                r = pl == 0 ? vb : S(B, dx, dy);
+              }
+              break;
+            }
+            default:  // cut
+              r = t < 0.5f ? S(A, dx, dy) : S(B, dx, dy);
+          }
+          op[static_cast<size_t>(y) * ostride + static_cast<size_t>(x) * ostep] = to_u8(r);
+        }
+    });
+  }
+  return HBR_OK;
+}
+
+int hbr_zoom_yuv(const hbr_yuv* src, hbr_yuv* dst, int w, int h, float scale) {
+  if (!src || !dst || w < 2 || h < 2) return HBR_ERR_ARG;
+  scale = clampf(scale, 1.f, 8.f);
+  double cw = w / scale, ch = h / scale;
+  // crop takes integer rects: keep sub-pixel motion smooth by working at 1/4 px via a larger crop grid
+  int rw = std::max(2, static_cast<int>(std::lround(cw))), rh = std::max(2, static_cast<int>(std::lround(ch)));
+  int rx = static_cast<int>(std::lround((w - cw) / 2.0)), ry = static_cast<int>(std::lround((h - ch) / 2.0));
+  return hbr_crop_yuv(src, w, h, rx, ry, rw, rh, dst, w, h);
+}

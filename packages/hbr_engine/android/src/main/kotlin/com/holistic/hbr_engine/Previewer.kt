@@ -42,7 +42,7 @@ class Previewer(private val context: Context) : AutoCloseable {
         val out = I420Frame(cw, ch)
         MatteEngine(w, h, 0f, softness, smoothing, clean).use { engine ->
             engine.refine(frame, mask, src.mw, src.mh, 0)
-            Compositor(engine, layout, matrix, true).composeInto(frame, out, backgroundFor(background, cw, ch, timeMs, matrix).next())
+            Compositor(engine, layout, matrix, true, OutlineSpec.from(settings, matrix, true)).composeInto(frame, out, backgroundFor(background, cw, ch, timeMs, matrix).next())
             CaptionRenderer.from(settings, cw, ch, 0, matrix, true)?.drawInto(timeMs, out)
         }
         val outRgba = ByteBuffer.allocateDirect(cw * ch * 4)

@@ -318,8 +318,12 @@ async function backgroundFor(engine, bg, rotation, matrix, full, L, target) {
 
 /** Person in front of the background on the output canvas; returns the output buffer. */
 function composeFrame(eng, L, spec, canvasBuf, outBuf) {
+  const outlined = () => {
+    if (L.outline) eng.M._hbrw_outline(eng.e, eng.dst, L.W, L.H, L.outline.yuv, L.outline.width, L.outline.glow);
+  };
   if (L.identity) {
     eng.composite(spec);
+    outlined();
     return eng.dst;
   }
   const M = eng.M, { W, H, CW, CH } = L;
@@ -333,6 +337,7 @@ function composeFrame(eng, L, spec, canvasBuf, outBuf) {
     eng.crop(canvasBuf, CW, CH, L.rect, eng.bg, W, H);
     eng.composite({ mode: 1 });
   }
+  outlined();
   eng.blit(canvasBuf, CW, CH, outBuf, CW, CH, { x: 0, y: 0, w: CW, h: CH });
   eng.blit(eng.dst, W, H, outBuf, CW, CH, L.rect);
   return outBuf;
@@ -341,7 +346,7 @@ function composeFrame(eng, L, spec, canvasBuf, outBuf) {
 // ---------------------------------------------------------------- preview
 
 /** One processed frame, upright, drawn into `canvas`. */
-export async function renderPreview({ videoEl, canvas, timeS, bg, settings, landscape, frame, captions }) {
+export async function renderPreview({ videoEl, canvas, timeS, bg, settings, landscape, frame, captions, outline }) {
   const M = await loadCore();
   await seek(videoEl, timeS);
   const maxSide = 960;
@@ -367,6 +372,7 @@ export async function renderPreview({ videoEl, canvas, timeS, bg, settings, land
     const mask = personMask(seg.segment(c));
     eng.refine(mask.data, mask.w, mask.h, 0);
     const L = layoutFor(eng, w, h, 0, frame?.aspect, frame?.fit, frame?.person);
+    if (outline) L.outline = { yuv: eng.yuvColor(outline.argb, 1, true), width: outline.width, glow: outline.glow ? 1 : 0 };
     let canvasBuf = 0, outBuf = 0;
     if (!L.identity) {
       canvasBuf = M._hbrw_alloc(i420Size(L.CW, L.CH));
@@ -398,7 +404,7 @@ export async function renderPreview({ videoEl, canvas, timeS, bg, settings, land
  * Mixes the video's own sound with music (looped, faded, lowered while the
  * person talks) and encodes it. Returns { codec, sampleRate, channels, chunks }.
  */
-async function mixSoundtrack(file, durationS, sound) {
+async function mixSoundtrack(file, durationS, sound, offsetS = 0) {
   const rate = 48000;
   const frames = Math.max(1, Math.round(durationS * rate));
   const dec = new OfflineAudioContext(2, 1, rate);
@@ -414,7 +420,7 @@ async function mixSoundtrack(file, durationS, sound) {
     const g = ctx.createGain();
     g.gain.value = sound.voiceVolume ?? 1;
     src.connect(g).connect(ctx.destination);
-    src.start(0);
+    src.start(Math.max(0, offsetS));
   }
   if (music) {
     const src = ctx.createBufferSource();
@@ -430,9 +436,11 @@ async function mixSoundtrack(file, durationS, sound) {
       const ch1 = voice.numberOfChannels > 1 ? voice.getChannelData(1) : ch0;
       const per = Math.round(voice.sampleRate * step);
       let env = 0, duck = 1;
+      const shift = Math.round(Math.max(0, offsetS) / step);
       for (let i = 0; i < n; i++) {
         let peak = 0;
-        for (let j = i * per, e = Math.min(ch0.length, (i + 1) * per); j < e; j++) {
+        const k = i - shift;
+        for (let j = Math.max(0, k * per), e = k < 0 ? 0 : Math.min(ch0.length, (k + 1) * per); j < e; j++) {
           peak = Math.max(peak, Math.abs(ch0[j]), Math.abs(ch1[j]));
         }
         env += (peak - env) * (peak > env ? 0.8 : 0.06);
@@ -528,7 +536,117 @@ async function pickEncoder(meta, W, H) {
  * Full export. onProgress({fraction, frames, total, fps}). Returns
  * {blob, warnings, encoder}. `signal` cancels.
  */
-export async function exportVideo({ meta, bg, settings, onProgress, signal, frame, sound, file, captions }) {
+// ---------------------------------------------------------------- intro / outro clips
+
+export const TRANSITIONS = [
+  ['cut', 'Cut', 0], ['fade', 'Fade', 1], ['black', 'Dip to black', 2], ['flash', 'Flash', 3],
+  ['slide', 'Slide', 4], ['push', 'Push', 5], ['up', 'Slide up', 6], ['zoomin', 'Zoom in', 7],
+  ['zoomout', 'Zoom out', 8], ['circle', 'Circle', 9], ['wipe', 'Wipe', 10], ['spin', 'Spin', 11],
+];
+const trCode = (id) => (TRANSITIONS.find((t) => t[0] === id) || TRANSITIONS[1])[2];
+
+/** Upright clip picture filling dw x dh: cover, or the whole picture over a blurred copy. */
+function clipPicture(source, dw, dh, fit) {
+  const sw = source.videoWidth || source.width, sh = source.videoHeight || source.height;
+  const c = new OffscreenCanvas(dw, dh);
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.imageSmoothingQuality = 'high';
+  const cover = Math.max(dw / sw, dh / sh), contain = Math.min(dw / sw, dh / sh);
+  const draw = (k) => ctx.drawImage(source, (dw - sw * k) / 2, (dh - sh * k) / 2, sw * k, sh * k);
+  if (fit) {
+    ctx.filter = `blur(${Math.round(Math.min(dw, dh) / 30)}px) brightness(0.7)`;
+    draw(cover * 1.1);
+    ctx.filter = 'none';
+    draw(contain);
+  } else draw(cover);
+  return ctx.getImageData(0, 0, dw, dh);
+}
+
+/** Total length of the clips (seconds). */
+export function clipsDuration(list) {
+  return (list || []).reduce((a, c) => a + clipLength(c), 0);
+}
+function clipLength(c) {
+  if (c.kind === 'video') return Math.min(c.element?.duration || 0, c.maxS || 60);
+  return c.durationS || 3;
+}
+
+/**
+ * Puts output frames in order with the chosen transitions: each part
+ * enters over `trS` seconds from the last frame of the part before it
+ * (or from black), and the film can end by fading to black.
+ */
+class Sequencer {
+  constructor(M, CW, CH, rot, black, { trS = 0.8, fadeOut = false, endUs = 0 } = {}) {
+    this.M = M; this.CW = CW; this.CH = CH; this.rot = rot;
+    this.size = i420Size(CW, CH);
+    this.prev = M._hbrw_alloc(this.size);
+    this.out = M._hbrw_alloc(this.size);
+    this.out2 = M._hbrw_alloc(this.size);
+    this.black = M._hbrw_alloc(this.size);
+    M._hbrw_fill_i420(this.black, CW, CH, black);
+    M.HEAPU8.copyWithin(this.prev, this.black, this.black + this.size);
+    this.trS = trS; this.fadeOut = fadeOut; this.endUs = endUs;
+    this.type = 0; this.startUs = 0;
+  }
+  /** A new part starts at output time startUs, entering with transition `id`. */
+  begin(id, startUs) { this.type = trCode(id); this.startUs = startUs; }
+  /** Returns the buffer to encode for this frame. */
+  frame(ptr, outUs) {
+    const M = this.M;
+    let cur = ptr;
+    const local = (outUs - this.startUs) / 1e6;
+    if (this.type && local < this.trS) {
+      M._hbrw_transition(this.prev === cur ? this.black : this.prevSnap(), cur, this.out, this.CW, this.CH, this.rot, this.type, Math.max(0, local) / this.trS);
+      cur = this.out;
+    } else this.snapDirty = true;
+    if (this.fadeOut && this.endUs && outUs > this.endUs - this.trS * 1e6) {
+      const t = Math.min(1, (outUs - (this.endUs - this.trS * 1e6)) / (this.trS * 1e6));
+      M._hbrw_transition(cur, this.black, this.out2, this.CW, this.CH, this.rot, 1, t);
+      cur = this.out2;
+    }
+    this.last = cur;
+    this.lastSrc = ptr;
+    return cur;
+  }
+  /** Freezes the last shown frame as the start of the next transition. */
+  hold() {
+    if (this.last) this.M.HEAPU8.copyWithin(this.prev, this.last, this.last + this.size);
+    this.held = true;
+  }
+  prevSnap() { return this.prev; }
+  free() { for (const p of [this.prev, this.out, this.out2, this.black]) this.M._hbrw_free(p); }
+}
+
+/** Renders the frames of one clip (picture or video) into `buf`, calling emit(ptr, localUs, durUs). */
+async function renderClip(eng, clip, L, rot, matrix, full, buf, tmp, fps, emit, signal) {
+  const M = eng.M, { CW, CH } = L, dur = 1e6 / fps;
+  const total = clipLength(clip);
+  const n = Math.max(1, Math.round(total * fps));
+  if (clip.kind === 'image') {
+    eng.setBackgroundPicture(clipPicture(clip.bitmap, L.dispW, L.dispH, clip.fit), rot, matrix, full, buf, CW, CH);
+    for (let i = 0; i < n; i++) {
+      if (signal?.aborted) throw new DOMException('cancelled', 'AbortError');
+      let ptr = buf;
+      if (clip.motion === 'in' || clip.motion === 'out') {
+        const p = i / Math.max(1, n - 1), z = 0.14 * (clip.motion === 'in' ? p : 1 - p);
+        M._hbrw_zoom(buf, tmp, CW, CH, 1 + z);
+        ptr = tmp;
+      }
+      await emit(ptr, i * dur, dur);
+    }
+  } else {
+    const v = clip.element;
+    for (let i = 0; i < n; i++) {
+      if (signal?.aborted) throw new DOMException('cancelled', 'AbortError');
+      await seek(v, Math.min(v.duration - 0.01, i / fps));
+      eng.setBackgroundPicture(clipPicture(v, L.dispW, L.dispH, clip.fit), rot, matrix, full, buf, CW, CH);
+      await emit(buf, i * dur, dur);
+    }
+  }
+}
+
+export async function exportVideo({ meta, bg, settings, onProgress, signal, frame, sound, file, captions, sequence, outline }) {
   const M = await loadCore();
   const W = meta.width, H = meta.height, rot = meta.rotation;
   const warnings = [];
@@ -542,13 +660,16 @@ export async function exportVideo({ meta, bg, settings, onProgress, signal, fram
 
   const audio = meta.audio;
   let mixed = null;
-  const wantsMix = sound && (sound.music || (sound.voiceVolume ?? 1) !== 1);
+  const before = sequence?.before || [], after = sequence?.after || [];
+  const introS = clipsDuration(before), outroS = clipsDuration(after);
+  const hasClips = before.length + after.length > 0;
+  const wantsMix = (sound && (sound.music || (sound.voiceVolume ?? 1) !== 1)) || hasClips;
   if (wantsMix) {
     try {
-      mixed = await mixSoundtrack(file, meta.durationS, sound);
+      mixed = await mixSoundtrack(file, introS + meta.durationS + outroS, sound || {}, introS);
     } catch (e) {
       console.warn('soundtrack mix failed', e);
-      warnings.push(`The music could not be added (${e.message || e}); the original sound was kept.`);
+      warnings.push(hasClips ? `The sound could not be prepared (${e.message || e}).` : `The music could not be added (${e.message || e}); the original sound was kept.`);
     }
   }
   const muxAudio = !mixed && audio && audio.codec && audio.description !== undefined;
@@ -579,6 +700,38 @@ export async function exportVideo({ meta, bg, settings, onProgress, signal, fram
   });
 
   let matrix = 1, full = false, colorSpace = null, nextBg = null, firstTs = null;
+  const introUs = Math.round(introS * 1e6);
+  const mainUs = Math.round(meta.durationS * 1e6);
+  const endUs = introUs + mainUs + Math.round(outroS * 1e6);
+  let seq = null, clipBuf = 0, clipTmp = 0, lastOutUs = 0, lastDur = 0;
+  const useSeq = hasClips || sequence?.fadeIn || sequence?.fadeOut;
+  const encodePtr = async (ptr, outUs, dur) => {
+    while (encoder.encodeQueueSize > 4) await tick();
+    const vf = new VideoFrame(eng.view(ptr, i420Size(CW, CH)), {
+      format: 'I420', codedWidth: CW, codedHeight: CH, timestamp: outUs, duration: dur,
+      ...(colorSpace ? { colorSpace } : {}),
+    });
+    encoder.encode(vf, { keyFrame: encodedCount % keyEvery === 0 });
+    vf.close();
+    encodedCount++;
+    lastOutUs = outUs; lastDur = dur;
+  };
+  let encodedCount = 0;
+  const fpsOut = meta.fps || 30;
+  const runClips = async (list, startUs) => {
+    let at = startUs;
+    for (const clip of list) {
+      seq.begin(clip.transition || 'fade', at);
+      await renderClip(eng, clip, L, rot, matrix, full, clipBuf, clipTmp, fpsOut, async (ptr, localUs, dur) => {
+        const t = Math.round(at + localUs);
+        await encodePtr(seq.frame(ptr, t), t, dur);
+      }, signal);
+      seq.hold();
+      at += Math.round(clipLength(clip) * 1e6);
+      onProgress?.({ fraction: done / total, frames: done, total, fps: 0, stage: 'clips' });
+    }
+    return at;
+  };
   const painter = captions?.enabled && captions.cues?.length ? new CaptionPainter(captions, L.dispW, L.dispH, rot) : null;
   const total = meta.videoSamples.length;
   const keyEvery = Math.max(1, Math.round(meta.fps));
@@ -599,6 +752,15 @@ export async function exportVideo({ meta, bg, settings, onProgress, signal, fram
         matrix = matrixOf(frame.colorSpace);
         full = !!frame.colorSpace?.fullRange;
         nextBg = await backgroundFor(eng, bg, rot, matrix, full, L, L.identity ? eng.bg : canvasBuf);
+        if (outline) L.outline = { yuv: eng.yuvColor(outline.argb, matrix, full), width: outline.width, glow: outline.glow ? 1 : 0 };
+        if (useSeq) {
+          seq = new Sequencer(M, CW, CH, rot, eng.yuvColor(0xff000000, matrix, full),
+            { trS: sequence?.transitionS ?? 0.8, fadeOut: !!sequence?.fadeOut, endUs });
+          clipBuf = M._hbrw_alloc(i420Size(CW, CH));
+          clipTmp = M._hbrw_alloc(i420Size(CW, CH));
+          await runClips(before, 0);
+          seq.begin(before.length ? (sequence?.into || 'fade') : (sequence?.fadeIn ? 'fade' : 'cut'), introUs);
+        }
       }
       const fw = frame.visibleRect?.width ?? frame.displayWidth;
       const fh = frame.visibleRect?.height ?? frame.displayHeight;
@@ -642,13 +804,13 @@ export async function exportVideo({ meta, bg, settings, onProgress, signal, fram
         painter.draw(M, outPtr, CW, CH, (ts - firstTs) / 1000, matrix, full);
       }
 
-      while (encoder.encodeQueueSize > 4) await tick();
-      const out = new VideoFrame(eng.view(outPtr, i420Size(CW, CH)), {
-        format: 'I420', codedWidth: CW, codedHeight: CH, timestamp: ts, duration: dur,
-        ...(colorSpace ? { colorSpace } : {}),
-      });
-      encoder.encode(out, { keyFrame: done % keyEvery === 0 });
-      out.close();
+      firstTs ??= ts;
+      if (seq) {
+        const t = introUs + (ts - firstTs);
+        await encodePtr(seq.frame(outPtr, t), t, dur);
+      } else {
+        await encodePtr(outPtr, ts, dur);
+      }
       done++;
       if (done % 3 === 0 || done === total) {
         const secs = (performance.now() - t0) / 1000;
@@ -683,6 +845,11 @@ export async function exportVideo({ meta, bg, settings, onProgress, signal, fram
     }
     await decoder.flush();
     await drain();
+    if (seq && after.length) {
+      seq.hold();
+      seq.endUs = lastOutUs + lastDur + Math.round(outroS * 1e6);
+      await runClips(after, lastOutUs + lastDur);
+    }
     await encoder.flush();
     if (encError) throw encError;
 
@@ -703,7 +870,7 @@ export async function exportVideo({ meta, bg, settings, onProgress, signal, fram
       blob: new Blob([muxer.target.buffer], { type: 'video/mp4' }),
       warnings,
       encoder: encConfig.codec,
-      frames: done,
+      frames: encodedCount,
     };
   } finally {
     for (const f of frameQueue) f.close();
@@ -712,6 +879,9 @@ export async function exportVideo({ meta, bg, settings, onProgress, signal, fram
     if (canvasBuf) M._hbrw_free(canvasBuf);
     if (outBuf) M._hbrw_free(outBuf);
     painter?.free(M);
+    seq?.free();
+    if (clipBuf) M._hbrw_free(clipBuf);
+    if (clipTmp) M._hbrw_free(clipTmp);
     eng.destroy();
   }
 }

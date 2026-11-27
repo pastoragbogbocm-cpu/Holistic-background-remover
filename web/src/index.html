@@ -85,6 +85,15 @@ select{background:#0f1216;color:var(--ink);border:1px solid var(--line);border-r
 .cue{display:grid;grid-template-columns:52px 1fr;gap:8px;align-items:center}
 .cue time{font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums;cursor:pointer}
 .cue input{background:#0f1216;border:1px solid var(--line);border-radius:8px;color:var(--ink);font:inherit;font-size:14px;padding:7px 9px;min-width:0}
+.clip{display:grid;grid-template-columns:56px 1fr auto;gap:10px;align-items:start;background:#0f1216;border:1px solid var(--line);border-radius:12px;padding:8px;margin-top:8px}
+.clip .thumb{width:56px;height:56px;border-radius:8px;object-fit:cover;background:#000}
+.clip .opts{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+.clip .opts select{min-height:36px;flex:1 1 110px;font-size:13px}
+.clip .name{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;width:100%}
+.clips-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:12px}
+.trs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:6px}
+.trs button{background:#0f1216;border:1.5px solid var(--line);border-radius:10px;color:var(--mute);font:inherit;font-size:12px;padding:8px 2px;min-height:40px;cursor:pointer}
+.trs button[aria-pressed=true]{border-color:var(--acc);color:var(--acc);background:#10221f}
 footer{color:var(--mute);font-size:13px;padding:8px max(3vw,16px) 28px;max-width:1440px;margin:0 auto}
 </style>
 </head>
@@ -211,6 +220,36 @@ footer{color:var(--mute);font-size:13px;padding:8px max(3vw,16px) 28px;max-width
         <label class="check"><input type="checkbox" id="capCaps"> ALL CAPS</label>
         <details class="capEdit"><summary>Edit words <span class="small" id="capCount"></span></summary><div id="capList"></div></details>
       </div>
+    </div>
+
+    <div class="card">
+      <h3>Outline</h3>
+      <label class="check" style="margin-top:0"><input type="checkbox" id="olOn"> Outline around the speaker</label>
+      <div id="olOpts" class="hidden">
+        <div class="swatches mini" id="olSw"></div>
+        <label class="check">Custom <input type="color" id="olCustom" value="#ffffff"></label>
+        <div class="small" style="margin-top:12px">Thickness</div>
+        <div class="toggle three" id="olWidth"><button data-w="0.006">Thin</button><button data-w="0.012" aria-pressed="true">Medium</button><button data-w="0.02">Thick</button></div>
+        <div class="small" style="margin-top:12px">Look</div>
+        <div class="toggle wide" id="olLook" style="margin-top:6px"><button data-g="0" aria-pressed="true">Solid line</button><button data-g="1" aria-pressed="false">Soft glow</button></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Intro &amp; outro</h3>
+      <p class="small" style="margin:0">Add pictures or videos before and after your video, with an animation between each part.</p>
+      <div class="clips-head"><b style="font-size:14px">Before your video</b><button class="btn" id="addBefore">Add</button></div>
+      <div id="listBefore"></div>
+      <div class="clips-head"><b style="font-size:14px">After your video</b><button class="btn" id="addAfter">Add</button></div>
+      <div id="listAfter"></div>
+      <div class="place">
+        <div class="small">Animation into your video</div>
+        <div class="trs" id="trInto"></div>
+        <label class="row"><span>Animation length <b id="trLenV">0.8 s</b></span><input type="range" id="trLen" min="0.3" max="2" step="0.1" value="0.8"></label>
+        <label class="check"><input type="checkbox" id="fadeIn"> Fade in from black at the start</label>
+        <label class="check"><input type="checkbox" id="fadeOut"> Fade to black at the end</label>
+      </div>
+      <input type="file" id="clipFile" accept="image/*,video/*" class="hidden">
     </div>
 
     <div class="card">

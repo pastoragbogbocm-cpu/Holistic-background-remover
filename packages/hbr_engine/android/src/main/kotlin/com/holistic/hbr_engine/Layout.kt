@@ -127,6 +127,7 @@ class Compositor(
     private val layout: Layout,
     private val matrix: Int,
     private val full: Boolean,
+    private val outline: OutlineSpec? = null,
 ) {
     private val cw = layout.canvasW
     private val ch = layout.canvasH
@@ -144,6 +145,7 @@ class Compositor(
     ) {
         if (layout.identity) {
             engine.composite(src, dy, dyStride, du, dv, duvStride, duvPix, bg)
+            outline?.let { engine.outline(it, dy, dyStride, du, dv, duvStride, duvPix) }
             return
         }
         val r = layout.personRect
@@ -171,6 +173,7 @@ class Compositor(
             check(HbrNative.nativeCrop(canvas.buffer, cw, ch, r.x, r.y, r.w, r.h, srcBg.buffer, srcBg.width, srcBg.height) == 0)
             engine.compositeInto(src, person, BackgroundFrame(HbrNative.MODE_IMAGE, image = srcBg))
         }
+        outline?.let { engine.outline(it, person.y, person.width, person.u, person.v, person.chromaWidth, 1) }
         // 3. canvas, then the person layer on top, into the destination
         check(HbrNative.nativeBlit(canvas.buffer, cw, ch, dy, dyStride, du, dv, duvStride, duvPix, cw, ch, 0, 0, cw, ch) == 0)
         check(HbrNative.nativeBlit(person.buffer, person.width, person.height, dy, dyStride, du, dv, duvStride, duvPix,

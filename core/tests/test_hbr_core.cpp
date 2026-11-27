@@ -411,7 +411,79 @@ static void test_overlay() {
   hbr_overlay_rgba(&v, 32, 32, img.data(), 8, 8, 32, 28, -4, 1, HBR_MATRIX_BT709, 0);
 }
 
+static void test_outline() {
+  const int W = 160, H = 160;
+  Frame f(W, H);
+  std::fill(f.y.begin(), f.y.end(), 120);
+  std::fill(f.uv.begin(), f.uv.end(), 128);
+  hbr_engine* e = make(W, H, 0.f);
+  // person = disc of radius 40 in the middle
+  std::vector<uint8_t> mask(64 * 64);
+  for (int y = 0; y < 64; ++y)
+    for (int x = 0; x < 64; ++x) mask[y * 64 + x] = ((x - 32) * (x - 32) + (y - 32) * (y - 32) < 16 * 16) ? 255 : 0;
+  CHECK(hbr_refine_u8(e, f.y.data(), W, mask.data(), 64, 64, 64, 0) == 0, "refine");
+  Frame out = f;
+  hbr_yuv s = f.view(), d = out.view();
+  hbr_composite_color(e, &s, &d, 16, 128, 128);
+  CHECK(hbr_draw_outline(e, &d, W, H, 235, 128, 128, 0.05f, 0) == 0, "outline");  // 8 px white
+  int st;
+  const uint8_t* a = hbr_alpha(e, &st);
+  // find the person's right edge on the middle row, then look just outside it
+  int edge = W / 2;
+  while (edge < W - 1 && a[(H / 2) * st + edge] >= 128) ++edge;
+  CHECK(out.y[(H / 2) * W + edge + 3] > 200, "outline missing next to the person: %d", out.y[(H / 2) * W + edge + 3]);
+  CHECK(out.y[(H / 2) * W + edge + 20] == 16, "outline too wide: %d", out.y[(H / 2) * W + edge + 20]);
+  CHECK(out.y[(H / 2) * W + W / 2] == 120, "person must stay untouched: %d", out.y[(H / 2) * W + W / 2]);
+  CHECK(out.y[5 * W + 5] == 16, "far background changed");
+  // glow: softer and wider, fading out
+  Frame g = f;
+  hbr_yuv gd = g.view();
+  hbr_composite_color(e, &s, &gd, 16, 128, 128);
+  hbr_draw_outline(e, &gd, W, H, 235, 128, 128, 0.05f, 1);
+  int near = g.y[(H / 2) * W + edge + 2], mid = g.y[(H / 2) * W + edge + 10];
+  CHECK(near > mid && mid > 16, "glow should fade out: near %d mid %d", near, mid);
+  CHECK(hbr_draw_outline(e, &gd, W + 2, H, 235, 128, 128, 0.05f, 0) != 0, "size mismatch must be rejected");
+  hbr_destroy(e);
+}
+
+static void test_transitions() {
+  const int W = 96, H = 64;
+  Frame A(W, H), B(W, H), O(W, H);
+  std::fill(A.y.begin(), A.y.end(), 50);
+  std::fill(B.y.begin(), B.y.end(), 200);
+  std::fill(A.uv.begin(), A.uv.end(), 128);
+  std::fill(B.uv.begin(), B.uv.end(), 128);
+  hbr_yuv a = A.view(), b = B.view(), o = O.view();
+  for (int rot : {0, 90}) {
+    for (int type = 0; type < HBR_TR_COUNT; ++type) {
+      hbr_transition(&a, &b, &o, W, H, rot, type, 0.f);
+      int c0 = O.y[(H / 2) * W + W / 2];
+      hbr_transition(&a, &b, &o, W, H, rot, type, 1.f);
+      int c1 = O.y[(H / 2) * W + W / 2], k1 = O.y[2 * W + 2];
+      CHECK(std::abs(c0 - 50) <= 2, "type %d rot %d must start on a: %d", type, rot, c0);
+      CHECK(std::abs(c1 - 200) <= 2 && std::abs(k1 - 200) <= 2, "type %d rot %d must end on b: %d %d", type, rot, c1, k1);
+      hbr_transition(&a, &b, &o, W, H, rot, type, 0.5f);  // must not crash; mid-way differs from both for most
+    }
+  }
+  // slide from the right as the viewer sees it: halfway, the right half shows b
+  hbr_transition(&a, &b, &o, W, H, 0, HBR_TR_SLIDE, 0.5f);
+  CHECK(O.y[(H / 2) * W + W - 4] > 190 && O.y[(H / 2) * W + 4] < 60, "slide direction");
+  // rotated 90 clockwise for display: the stored top edge is the viewer's right
+  hbr_transition(&a, &b, &o, W, H, 90, HBR_TR_SLIDE, 0.5f);
+  CHECK(O.y[2 * W + W / 2] > 190 && O.y[(H - 3) * W + W / 2] < 60, "slide direction rotated: %d %d",
+        O.y[2 * W + W / 2], O.y[(H - 3) * W + W / 2]);
+  // zoom keeps the centre
+  Frame Z(W, H);
+  for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x) A.y[y * W + x] = static_cast<uint8_t>(x * 2);
+  hbr_yuv z = Z.view();
+  CHECK(hbr_zoom_yuv(&a, &z, W, H, 2.f) == 0, "zoom");
+  CHECK(std::abs(Z.y[(H / 2) * W + W / 2] - A.y[(H / 2) * W + W / 2]) <= 3, "zoom keeps centre");
+  CHECK(Z.y[(H / 2) * W + 2] > A.y[(H / 2) * W + 2] + 30, "zoom magnifies");
+}
+
 int main() {
+  test_outline();
+  test_transitions();
   test_decontamination();
   test_motion_sharpen();
   test_layout();

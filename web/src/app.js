@@ -1,4 +1,4 @@
-import { demux, summary, renderPreview, exportVideo, loadImageBitmap, videoElement } from './pipeline.js';
+import { demux, summary, renderPreview, exportVideo, loadImageBitmap, videoElement, TRANSITIONS, clipsDuration } from './pipeline.js';
 import { PRESETS, HIGHLIGHTS, LANGUAGES, groupCues, editCue, transcribe } from './captions.js';
 
 const $ = (id) => document.getElementById(id);
@@ -465,7 +465,7 @@ async function render() {
       await renderPreview({
         videoEl: state.videoEl, canvas: $('out'), timeS: state.timeS, bg: background(),
         settings: settings(), landscape: state.meta.displayWidth > state.meta.displayHeight, frame: frame(),
-        captions: captions(),
+        captions: captions(), outline: outline(),
       });
       if (!state.showOriginal) $('out').classList.remove('hidden');
       setErr('');
@@ -477,6 +477,108 @@ async function render() {
   state.rendering = false;
   $('busy').style.display = 'none';
 }
+
+
+// ---------- outline around the speaker
+const OUTLINE_SW = [0xffffffff, 0xff000000, 0xfff59e0b, 0xffec4899, 0xff2dd4bf, 0xff0047bb, 0xffef4444, 0xff22c55e];
+state.outline = { on: false, argb: 0xffffffff, width: 0.012, glow: false };
+const outline = () => (state.outline.on ? { argb: state.outline.argb, width: state.outline.width, glow: state.outline.glow } : null);
+function drawOutline() {
+  const o = state.outline;
+  $('olOpts').classList.toggle('hidden', !o.on);
+  $('olSw').innerHTML = OUTLINE_SW.map((c) =>
+    `<button class="sw" style="background:${hex(c)}" data-c="${c}" aria-label="Outline colour ${hex(c)}" aria-pressed="${c === o.argb}"></button>`).join('');
+  for (const b of $('olWidth').children) b.setAttribute('aria-pressed', String(+b.dataset.w === o.width));
+  for (const b of $('olLook').children) b.setAttribute('aria-pressed', String(!!+b.dataset.g === o.glow));
+}
+$('olOn').onchange = (e) => { state.outline.on = e.target.checked; drawOutline(); schedule(true); };
+$('olSw').onclick = (e) => { const b = e.target.closest('.sw'); if (!b) return; state.outline.argb = +b.dataset.c >>> 0; drawOutline(); schedule(true); };
+$('olCustom').oninput = (e) => { state.outline.argb = (0xff000000 | parseInt(e.target.value.slice(1), 16)) >>> 0; drawOutline(); schedule(); };
+$('olWidth').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; state.outline.width = +b.dataset.w; drawOutline(); schedule(true); };
+$('olLook').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; state.outline.glow = !!+b.dataset.g; drawOutline(); schedule(true); };
+drawOutline();
+
+// ---------- intro & outro clips, animations
+state.before = []; state.after = []; state.into = 'fade';
+let clipTarget = 'before';
+const sequence = () => ({
+  before: state.before, after: state.after, into: state.into,
+  fadeIn: $('fadeIn').checked, fadeOut: $('fadeOut').checked, transitionS: +$('trLen').value,
+});
+const trOptions = (sel) => TRANSITIONS.map(([id, label]) => `<option value="${id}"${id === sel ? ' selected' : ''}>${label}</option>`).join('');
+const secs = (x) => (x >= 10 ? Math.round(x) : Math.round(x * 10) / 10) + ' s';
+function drawClips() {
+  for (const [key, el] of [['before', 'listBefore'], ['after', 'listAfter']]) {
+    $(el).innerHTML = state[key].map((c, i) => `
+      <div class="clip" data-list="${key}" data-i="${i}">
+        <img class="thumb" src="${c.thumb}" alt="">
+        <div class="opts">
+          <div class="name">${c.kind === 'video' ? '🎬' : '🖼'} ${c.name.replace(/[<>&"]/g, '')} · ${secs(c.kind === 'video' ? Math.min(c.element.duration, c.maxS) : c.durationS)}</div>
+          <select data-f="transition" aria-label="Animation into this part">${trOptions(c.transition)}</select>
+          <select data-f="fit" aria-label="How it fits"><option value="0"${c.fit ? '' : ' selected'}>Fill frame</option><option value="1"${c.fit ? ' selected' : ''}>Whole picture</option></select>
+          ${c.kind === 'image' ? `
+          <select data-f="durationS" aria-label="Show for">${[2, 3, 4, 5, 7, 10].map((d) => `<option value="${d}"${d === c.durationS ? ' selected' : ''}>${d} seconds</option>`).join('')}</select>
+          <select data-f="motion" aria-label="Movement"><option value="none"${c.motion === 'none' ? ' selected' : ''}>Still</option><option value="in"${c.motion === 'in' ? ' selected' : ''}>Slow zoom in</option><option value="out"${c.motion === 'out' ? ' selected' : ''}>Slow zoom out</option></select>` : ''}
+        </div>
+        <button class="btn" data-del aria-label="Remove">✕</button>
+      </div>`).join('');
+  }
+  $('trInto').innerHTML = TRANSITIONS.map(([id, label]) => `<button data-t="${id}" aria-pressed="${id === state.into}">${label}</button>`).join('');
+  const extra = clipsDuration(state.before) + clipsDuration(state.after);
+  $('trInto').previousElementSibling.textContent = state.before.length ? 'Animation into your video' : 'Animation into your video (used after an intro)';
+  if (state.meta) $('keeps').dataset.extra = extra ? ` Intro and outro add ${secs(extra)}.` : '';
+}
+for (const el of ['listBefore', 'listAfter']) {
+  $(el).addEventListener('change', (e) => {
+    const row = e.target.closest('.clip'), f = e.target.dataset.f;
+    if (!row || !f) return;
+    const c = state[row.dataset.list][+row.dataset.i];
+    c[f] = f === 'fit' ? e.target.value === '1' : f === 'durationS' ? +e.target.value : e.target.value;
+    drawClips();
+  });
+  $(el).addEventListener('click', (e) => {
+    const row = e.target.closest('.clip');
+    if (!row || !e.target.closest('[data-del]')) return;
+    const [c] = state[row.dataset.list].splice(+row.dataset.i, 1);
+    if (c.element) { c.element.remove(); URL.revokeObjectURL(c.element.src); }
+    drawClips();
+  });
+}
+$('addBefore').onclick = () => { clipTarget = 'before'; $('clipFile').click(); };
+$('addAfter').onclick = () => { clipTarget = 'after'; $('clipFile').click(); };
+$('trInto').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; state.into = b.dataset.t; drawClips(); };
+$('trLen').oninput = (e) => ($('trLenV').textContent = (+e.target.value).toFixed(1) + ' s');
+async function addClip(f, where = clipTarget) {
+  setErr('');
+  try {
+    let clip;
+    if (f.type.startsWith('video')) {
+      const element = await videoElement(URL.createObjectURL(f));
+      const c = document.createElement('canvas');
+      c.width = 112; c.height = Math.max(2, Math.round(112 * element.videoHeight / Math.max(1, element.videoWidth)));
+      c.getContext('2d').drawImage(element, 0, 0, c.width, c.height);
+      clip = { kind: 'video', element, name: f.name, fit: false, transition: 'fade', maxS: 60, thumb: c.toDataURL('image/jpeg', 0.7) };
+    } else {
+      const bitmap = await loadImageBitmap(f);
+      const c = document.createElement('canvas');
+      c.width = 112; c.height = Math.max(2, Math.round(112 * bitmap.height / bitmap.width));
+      c.getContext('2d').drawImage(bitmap, 0, 0, c.width, c.height);
+      clip = { kind: 'image', bitmap, name: f.name, fit: false, transition: 'fade', durationS: 3, motion: 'in', thumb: c.toDataURL('image/jpeg', 0.7) };
+    }
+    state[where].push(clip);
+    drawClips();
+    return clip;
+  } catch (e) {
+    console.error(e);
+    setErr('Could not open ' + f.name + ': ' + (e.message || e));
+  }
+}
+$('clipFile').onchange = async (e) => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (f) await addClip(f);
+};
+drawClips();
 
 // ---------- export
 $('export').onclick = async () => {
@@ -491,9 +593,10 @@ $('export').onclick = async () => {
   try {
     const r = await exportVideo({
       meta: state.meta, bg: background(), settings: settings(), signal: state.abort.signal, frame: frame(),
-      sound: sound(), file: state.file, captions: captions(),
-      onProgress: ({ fraction, frames, total, fps }) => {
+      sound: sound(), file: state.file, captions: captions(), outline: outline(), sequence: sequence(),
+      onProgress: ({ fraction, frames, total, fps, stage }) => {
         $('pbar').value = fraction;
+        if (stage === 'clips') { $('ptext').textContent = frames ? 'Adding the outro…' : 'Adding the intro…'; return; }
         const left = fps > 0 ? Math.round((total - frames) / fps) : 0;
         $('ptext').textContent = `${Math.round(fraction * 100)}% · frame ${frames} of ${total} · ${fps.toFixed(1)} fps · about ${Math.floor(left / 60)}m ${left % 60}s left`;
       },
@@ -543,4 +646,4 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http') && wind
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
-window.__hbr = { openVideo, state, schedule, drawShapes, drawPlacement, drawCaptions, drawCueList, groupCues }; // test hook
+window.__hbr = { openVideo, addClip, state, schedule, drawShapes, drawPlacement, drawCaptions, drawCueList, groupCues }; // test hook

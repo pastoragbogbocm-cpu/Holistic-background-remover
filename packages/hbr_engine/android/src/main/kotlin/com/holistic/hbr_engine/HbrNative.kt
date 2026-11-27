@@ -73,6 +73,14 @@ object HbrNative {
     ): Int
     @JvmStatic external fun nativeFill(dst: ByteBuffer, w: Int, h: Int, yuv: Int): Int
     @JvmStatic external fun nativeBlur(img: ByteBuffer, w: Int, h: Int, amount: Float): Int
+    @JvmStatic external fun nativeOutline(
+        handle: Long, dy: ByteBuffer, dyStride: Int, du: ByteBuffer, dv: ByteBuffer, duvStride: Int, duvPix: Int,
+        w: Int, h: Int, yuv: Int, width: Float, glow: Boolean,
+    ): Int
+    @JvmStatic external fun nativeTransition(
+        a: ByteBuffer, b: ByteBuffer, out: ByteBuffer, w: Int, h: Int, rotation: Int, type: Int, t: Float,
+    ): Int
+    @JvmStatic external fun nativeZoom(src: ByteBuffer, dst: ByteBuffer, w: Int, h: Int, scale: Float): Int
 
     fun placeRect(iw: Int, ih: Int, cw: Int, ch: Int, fit: Boolean, scale: Float = 1f, panX: Float = 0f, panY: Float = 0f): Rect4 {
         val o = IntArray(4)
@@ -151,11 +159,35 @@ class MatteEngine(
         check(rc == 0) { "composite failed ($rc)" }
     }
 
+    /** Draws [o] around the person (planes of this engine's size). */
+    fun outline(
+        o: OutlineSpec, dy: ByteBuffer, dyStride: Int, du: ByteBuffer, dv: ByteBuffer, duvStride: Int, duvPix: Int,
+    ) {
+        val rc = HbrNative.nativeOutline(handle, dy, dyStride, du, dv, duvStride, duvPix, width, height, o.yuv, o.width, o.glow)
+        check(rc == 0) { "outline failed ($rc)" }
+    }
+
     fun compositeInto(src: I420Frame, dst: I420Frame, bg: BackgroundFrame) =
         composite(src, dst.y, dst.width, dst.u, dst.v, dst.chromaWidth, 1, bg)
 
     override fun close() {
         if (handle != 0L) HbrNative.nativeDestroy(handle)
         handle = 0L
+    }
+}
+
+/** A line (or soft glow) around the person; [width] is a fraction of the short side. */
+class OutlineSpec(val yuv: Int, val width: Float, val glow: Boolean) {
+    companion object {
+        /** From settings["outline"] = {argb, width, glow}; null when off. */
+        fun from(settings: Map<*, *>, matrix: Int, full: Boolean): OutlineSpec? {
+            val o = settings["outline"] as? Map<*, *> ?: return null
+            val argb = (o["argb"] as? Number)?.toLong()?.toInt() ?: return null
+            val width = ((o["width"] as? Number)?.toFloat() ?: 0.012f).coerceIn(0.002f, 0.05f)
+            return OutlineSpec(
+                HbrNative.nativeRgbToYuv((argb shr 16) and 0xff, (argb shr 8) and 0xff, argb and 0xff, matrix, full),
+                width, o["glow"] as? Boolean ?: false,
+            )
+        }
     }
 }

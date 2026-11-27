@@ -160,6 +160,38 @@ int hbr_overlay_rgba(hbr_yuv* dst, int dw, int dh, const uint8_t* rgba, int ow,
                      int oh, int ostride, int x, int y, int premultiplied,
                      hbr_matrix m, int full_range);
 
+/* Outline around the person, drawn on a composited frame (w x h must be the
+ * engine's size; uses the last refined matte). width = thickness as a
+ * fraction of the short side; glow = 1 for a soft glow instead of a solid
+ * line. Colour is given as Y, U, V. */
+int hbr_draw_outline(hbr_engine* e, hbr_yuv* dst, int w, int h, uint8_t y,
+                     uint8_t u, uint8_t v, float width, int glow);
+
+/* Transition between two frames of the same size (stored orientation;
+ * rotation = clockwise display rotation, so directions follow what the
+ * viewer sees). t: 0 = all a, 1 = all b (eased inside). */
+enum {
+  HBR_TR_CUT = 0,
+  HBR_TR_FADE = 1,
+  HBR_TR_DIP_BLACK = 2,
+  HBR_TR_FLASH = 3,
+  HBR_TR_SLIDE = 4,
+  HBR_TR_PUSH = 5,
+  HBR_TR_SLIDE_UP = 6,
+  HBR_TR_ZOOM_IN = 7,
+  HBR_TR_ZOOM_OUT = 8,
+  HBR_TR_CIRCLE = 9,
+  HBR_TR_WIPE = 10,
+  HBR_TR_SPIN = 11,
+  HBR_TR_COUNT = 12
+};
+int hbr_transition(const hbr_yuv* a, const hbr_yuv* b, hbr_yuv* out, int w,
+                   int h, int rotation, int type, float t);
+
+/* Zooms a frame about its centre (scale >= 1), e.g. a slow push-in on a
+ * still picture. */
+int hbr_zoom_yuv(const hbr_yuv* src, hbr_yuv* dst, int w, int h, float scale);
+
 /* 4:2:0 -> RGBA (for previews/thumbnails). */
 int hbr_yuv_to_rgba(const hbr_yuv* src, int w, int h, uint8_t* rgba,
                     int stride, hbr_matrix m, int full_range);
