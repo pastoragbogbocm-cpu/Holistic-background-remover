@@ -193,7 +193,7 @@ internal class Stream(private val open: () -> PcmReader, private val outRate: In
  * (written to a temporary .m4a), so the exporter can copy it like any track.
  */
 object AudioMixer {
-    fun render(inputPath: String, voiceTrack: Int, durationUs: Long, mix: AudioMix, out: File) {
+    fun render(inputPath: String, voiceTrack: Int, durationUs: Long, mix: AudioMix, out: File, voiceOffsetUs: Long = 0) {
         val voice = if (voiceTrack >= 0) PcmReader(inputPath, voiceTrack).also { it.prime() } else null
         val rate = voice?.sampleRate?.takeIf { it in 8000..96000 } ?: 48000
         voice?.close()
@@ -220,6 +220,8 @@ object AudioMixer {
         val chunk = 1024
         val v = FloatArray(chunk * ch)
         val m = FloatArray(chunk * ch)
+        val vTmp = FloatArray(chunk * ch)
+        val offFrames = voiceOffsetUs.coerceAtLeast(0L) * rate / 1_000_000L
         val pcm = ShortArray(chunk * ch)
         var env = 0f // voice loudness envelope
         var duck = 1f
@@ -268,7 +270,17 @@ object AudioMixer {
                     eosSent = true
                     break
                 }
-                voiceStream?.fill(v, frames) ?: java.util.Arrays.fill(v, 0f)
+                if (voiceStream == null || written + frames <= offFrames) {
+                    java.util.Arrays.fill(v, 0f)
+                } else if (written >= offFrames) {
+                    voiceStream.fill(v, frames)
+                } else {
+                    // the voice starts inside this chunk (after the intro)
+                    val skip = (offFrames - written).toInt()
+                    voiceStream.fill(vTmp, frames - skip)
+                    java.util.Arrays.fill(v, 0, skip * ch, 0f)
+                    System.arraycopy(vTmp, 0, v, skip * ch, (frames - skip) * ch)
+                }
                 musicStream?.fill(m, frames) ?: java.util.Arrays.fill(m, 0f)
                 for (f in 0 until frames) {
                     val pos = written + f

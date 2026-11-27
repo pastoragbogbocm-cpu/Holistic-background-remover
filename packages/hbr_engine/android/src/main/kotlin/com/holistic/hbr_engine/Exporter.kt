@@ -66,7 +66,11 @@ class Exporter(
             val cw = layout.canvasW
             val ch = layout.canvasH
             MatteEngine(w, h, temporal, softness, smoothing, clean).use { engine ->
-                val compositor = Compositor(engine, layout, meta.matrix, meta.fullRange)
+                val compositor = Compositor(engine, layout, meta.matrix, meta.fullRange,
+                    OutlineSpec.from(settings, meta.matrix, meta.fullRange))
+                val sequence = SequenceSpec.from(settings)
+                val introUs = if (sequence.hasClips) sequence.introUs else 0L
+                val outroUs = if (sequence.hasClips) sequence.outroUs else 0L
                 val sideways = meta.rotation % 180 != 0
                 val captions = CaptionRenderer.from(
                     settings, if (sideways) ch else cw, if (sideways) cw else ch, meta.rotation, meta.matrix, meta.fullRange,
@@ -80,19 +84,22 @@ class Exporter(
                         muxer = mux
                         mux.setOrientationHint(meta.rotation)
                         val mix = AudioMix.from(settings)
-                        if (!mix.passthrough) {
-                            // music and/or voice level: mix into a new AAC track first
+                        val clipsSound = sequence.hasClips && (meta.audioTrack >= 0 || mix.musicPath != null)
+                        if (!mix.passthrough || clipsSound) {
+                            // music, voice level or intro/outro: mix into a new AAC track first
                             try {
                                 val f = File(context.cacheDir, "hbr_mix_${System.nanoTime()}.m4a")
                                 mixedAudio = f
-                                AudioMixer.render(inputPath, meta.audioTrack, meta.durationUs, mix, f)
+                                AudioMixer.render(inputPath, meta.audioTrack, introUs + meta.durationUs + outroUs, mix, f, introUs)
                                 audio = AudioCopier(f.path, 0)
                             } catch (e: Exception) {
                                 Log.w("HbrEngine", "audio mix failed", e)
-                                warning = "The music could not be added (${e.message}); the original sound was kept."
+                                warning = if (sequence.hasClips) "The sound could not be prepared (${e.message})."
+                                else "The music could not be added (${e.message}); the original sound was kept."
                             }
                         }
-                        if (audio == null && meta.audioTrack >= 0) {
+                        // (with an intro the original sound would be out of step, so it is not copied as it is)
+                        if (audio == null && meta.audioTrack >= 0 && !sequence.hasClips) {
                             audio = try {
                                 AudioCopier(inputPath, meta.audioTrack).also { c ->
                                     if (!AudioCopier.muxable(c.format, context.cacheDir)) {
@@ -123,6 +130,36 @@ class Exporter(
                         var frames = 0
                         var firstPts = -1L
                         var personFrames = 0
+                        val frameUs = (1e6 / meta.frameRate.coerceIn(1f, 240f)).toLong()
+                        var lastOutUs = 0L
+                        val seq = if (sequence.active) Sequencer(
+                            cw, ch, meta.rotation, HbrNative.nativeRgbToYuv(0, 0, 0, meta.matrix, meta.fullRange),
+                            (sequence.transitionS * 1e6).toLong(), sequence.fadeOut,
+                            introUs + meta.durationUs + outroUs,
+                        ) else null
+                        val mainFrame = if (seq != null) I420Frame(cw, ch) else null
+                        val clips = if (sequence.hasClips) ClipRenderer(cw, ch, meta.rotation, meta.matrix, meta.fullRange) else null
+                        fun runClips(list: List<ClipSpec>, startUs: Long) {
+                            var at = startUs
+                            for (clip in list) {
+                                seq!!.begin(clip.transition, at)
+                                clips!!.render(clip, meta.frameRate, isCancelled) { f, local, _ ->
+                                    val t = at + local
+                                    queueFrame(enc, seq.frame(f, t), cw, ch, t)
+                                    lastOutUs = t
+                                }
+                                seq.hold()
+                                at += clip.lengthUs
+                                onProgress(0.0, frames, 0.0)
+                            }
+                        }
+                        if (seq != null) {
+                            runClips(sequence.before, 0L)
+                            seq.begin(
+                                if (sequence.before.isNotEmpty()) sequence.into else if (sequence.fadeIn) "fade" else "cut",
+                                introUs,
+                            )
+                        }
                         while (decoder.next()) {
                             if (isCancelled()) throw ExportCancelled()
                             val pts = decoder.ptsUs
@@ -131,6 +168,20 @@ class Exporter(
                             if (mask.coverage() > 0.005f) personFrames++
                             engine.refine(decoder.frame, mask.buffer, mask.width, mask.height, meta.rotation)
                             val bgFrame = bg.next()
+
+                            if (seq != null && mainFrame != null) {
+                                compositor.composeInto(decoder.frame, mainFrame, bgFrame)
+                                captions?.drawInto((pts - firstPts) / 1000, mainFrame)
+                                val t = introUs + (pts - firstPts)
+                                queueFrame(enc, seq.frame(mainFrame, t), cw, ch, t)
+                                lastOutUs = t
+                                frames++
+                                if (frames % 5 == 0) {
+                                    val secs = (System.nanoTime() - started) / 1e9
+                                    onProgress(((pts - firstPts).toDouble() / totalUs).coerceIn(0.0, 0.99), frames, frames / secs)
+                                }
+                                continue
+                            }
 
                             val inIdx = dequeueInput(enc)
                             val img = enc.getInputImage(inIdx) ?: error("Encoder has no image input")
@@ -151,6 +202,12 @@ class Exporter(
                                 val secs = (System.nanoTime() - started) / 1e9
                                 onProgress(((pts - firstPts).toDouble() / totalUs).coerceIn(0.0, 0.99), frames, frames / secs)
                             }
+                        }
+                        if (seq != null && sequence.after.isNotEmpty()) {
+                            seq.hold()
+                            val outroStart = lastOutUs + frameUs
+                            seq.endUs = outroStart + outroUs
+                            runClips(sequence.after, outroStart)
                         }
                         // end of stream
                         val inIdx = dequeueInput(enc)
@@ -182,6 +239,17 @@ class Exporter(
             mixedAudio?.delete()
             decoder.close()
         }
+    }
+
+    /** Copies a tight I420 frame into the encoder and queues it at [ptsUs]. */
+    private fun queueFrame(enc: MediaCodec, f: I420Frame, cw: Int, ch: Int, ptsUs: Long) {
+        val inIdx = dequeueInput(enc)
+        val img = enc.getInputImage(inIdx) ?: error("Encoder has no image input")
+        val p = img.planes
+        check(HbrNative.nativeBlit(f.buffer, cw, ch, p[0].buffer, p[0].rowStride, p[1].buffer, p[2].buffer,
+            p[1].rowStride, p[1].pixelStride, cw, ch, 0, 0, cw, ch) == 0) { "frame copy failed" }
+        enc.queueInputBuffer(inIdx, 0, HbrNative.i420Size(cw, ch), ptsUs, 0)
+        drain(enc, false)
     }
 
     private fun dequeueInput(enc: MediaCodec): Int {

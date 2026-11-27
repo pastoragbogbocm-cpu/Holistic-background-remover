@@ -66,4 +66,24 @@ void main() {
     expect((m['style'] as Map)['preset'], 'pop');
     expect(const Captions().toMap(), isEmpty);
   });
+
+  test('outline and intro/outro serialise for the engine', () {
+    expect(const Outline().toMap(), isEmpty);
+    expect(const Outline(enabled: true, argb: 0xFFF59E0B, width: Outline.thick, glow: true).toMap(),
+        {'outline': {'argb': 0xFFF59E0B, 'width': 0.02, 'glow': true}});
+    expect(const Sequence().toMap(), isEmpty);
+    final s = const Sequence(
+      before: [IntroClip(path: '/logo.png', durationS: 2, motion: 'out')],
+      after: [IntroClip(path: '/end.mp4', isVideo: true, transition: 'circle', videoLengthS: 4)],
+      into: 'push',
+      fadeOut: true,
+    ).toMap()['sequence'] as Map;
+    expect(s['into'], 'push');
+    expect(s['fadeOut'], true);
+    expect((s['before'] as List).single,
+        {'kind': 'image', 'path': '/logo.png', 'durationS': 2.0, 'motion': 'out', 'fit': false, 'transition': 'fade', 'maxS': 60});
+    expect(((s['after'] as List).single as Map)['kind'], 'video');
+    expect(const Sequence(fadeIn: true).active, isTrue);
+    expect(transitions.length, 12);
+  });
 }

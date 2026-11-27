@@ -19,6 +19,8 @@ class ExportSheet extends StatefulWidget {
     this.frame = const OutputFrame(),
     this.soundtrack = const Soundtrack(),
     this.captions = const Captions(),
+    this.outline = const Outline(),
+    this.sequence = const Sequence(),
   });
 
   final String inputPath;
@@ -28,6 +30,8 @@ class ExportSheet extends StatefulWidget {
   final OutputFrame frame;
   final Soundtrack soundtrack;
   final Captions captions;
+  final Outline outline;
+  final Sequence sequence;
 
   @override
   State<ExportSheet> createState() => _ExportSheetState();
@@ -67,6 +71,8 @@ class _ExportSheetState extends State<ExportSheet> {
       frame: widget.frame,
       soundtrack: widget.soundtrack,
       captions: widget.captions,
+      outline: widget.outline,
+      sequence: widget.sequence,
     ).listen((p) async {
       if (!mounted) return;
       if (p.error != null) {

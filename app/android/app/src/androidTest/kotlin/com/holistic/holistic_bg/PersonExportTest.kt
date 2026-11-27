@@ -201,6 +201,89 @@ class PersonExportTest {
         assertTrue("captions leaked into the top: ${pct(top)}", top < 0.02f)
     }
 
+    @Test(timeout = 240_000)
+    fun outlineIsDrawnAroundThePerson() {
+        val input = asset("person.mp4")
+        val bg = mapOf("type" to "color", "argb" to GREEN)
+        val output = File(app.cacheDir, "outline_out.mp4").also { it.delete() }
+        val settings = mapOf("outline" to mapOf("argb" to (MAGENTA.toLong() and 0xFFFFFFFFL), "width" to 0.02, "glow" to false))
+        Exporter(app, input.path, output.path, bg, settings, { _, _, _ -> }, { false }).run()
+        val f = frameAt(output)
+        var line = 0
+        var green = 0
+        var total = 0
+        for (y in 0 until f.height step 2) for (x in 0 until f.width step 2) {
+            total++
+            val c = f.getPixel(x, y)
+            if (isMagenta(c)) line++ else if (isGreen(c)) green++
+        }
+        val l = line.toFloat() / total
+        assertTrue("outline missing: ${pct(l)} of the frame", l > 0.004f)
+        assertTrue("outline too large: ${pct(l)}", l < 0.2f)
+        assertTrue("background lost: ${pct(green.toFloat() / total)}", green.toFloat() / total > 0.2f)
+        // the preview shows it too
+        com.holistic.hbr_engine.Previewer(app).use { p ->
+            val jpeg = p.render(input.path, 1000, bg, settings, 640)
+            val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
+            var n = 0
+            for (y in 0 until bmp.height step 2) for (x in 0 until bmp.width step 2) if (isMagenta(bmp.getPixel(x, y))) n++
+            assertTrue("outline missing in preview", n > 20)
+        }
+    }
+
+    @Test(timeout = 300_000)
+    fun introAndOutroAreAddedWithAnimations() {
+        val input = asset("person_rot90.mp4")
+        val red = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888).apply { eraseColor(0xFFFF0000.toInt()) }
+        val pic = File(app.cacheDir, "intro.png")
+        pic.outputStream().use { red.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        val outro = asset("person.mp4")
+        val output = File(app.cacheDir, "seq_out.mp4").also { it.delete() }
+        val settings = mapOf(
+            "aspect" to "9:16",
+            "sequence" to mapOf(
+                "before" to listOf(mapOf("kind" to "image", "path" to pic.path, "durationS" to 1.5, "motion" to "in", "transition" to "cut")),
+                "after" to listOf(mapOf("kind" to "video", "path" to outro.path, "maxS" to 1.0, "transition" to "circle")),
+                "into" to "push", "fadeOut" to true, "transitionS" to 0.3,
+            ),
+        )
+        Exporter(app, input.path, output.path, mapOf("type" to "color", "argb" to GREEN), settings, { _, _, _ -> }, { false }).run()
+        val mainS = com.holistic.hbr_engine.VideoProbe.probe(input.path).durationUs / 1e6
+        val r = MediaMetadataRetriever()
+        try {
+            r.setDataSource(output.path)
+            val durS = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)!!.toLong() / 1000.0
+            val want = mainS + 1.5 + 1.0
+            assertTrue("length ${durS}s, expected about ${want}s", abs(durS - want) < 0.35)
+            fun share(tUs: Long, test: (Int) -> Boolean): Float {
+                val f = r.getFrameAtTime(tUs, MediaMetadataRetriever.OPTION_CLOSEST)!!
+                var n = 0
+                var t = 0
+                for (y in 0 until f.height step 4) for (x in 0 until f.width step 4) {
+                    t++
+                    if (test(f.getPixel(x, y))) n++
+                }
+                return n.toFloat() / t
+            }
+            val introRed = share(700_000) { c -> ((c shr 16) and 0xff) > 180 && ((c shr 8) and 0xff) < 80 && (c and 0xff) < 80 }
+            assertTrue("intro picture missing: ${pct(introRed)} red", introRed > 0.8f)
+            val mainGreen = share(((1.5 + mainS / 2) * 1e6).toLong(), ::isGreen)
+            assertTrue("main video missing after the intro: ${pct(mainGreen)} green", mainGreen in 0.2f..0.9f)
+            val endDark = share(((want - 0.04) * 1e6).toLong()) { c ->
+                ((c shr 16) and 0xff) + ((c shr 8) and 0xff) + (c and 0xff) < 90
+            }
+            assertTrue("no fade to black at the end: ${pct(endDark)} dark", endDark > 0.6f)
+        } finally {
+            r.release()
+        }
+        // the voice starts with the main video, after the intro
+        val (pcm, rate) = decodeAudio(output)
+        assertTrue("sound too short: ${pcm.size.toDouble() / rate}s", pcm.size.toDouble() / rate > mainS + 2.0)
+        var introPeak = 0
+        for (i in rate / 10 until rate) introPeak = maxOf(introPeak, abs(pcm[i].toInt()))
+        assertTrue("voice heard during the intro (peak $introPeak)", introPeak < 800)
+    }
+
     /** Interleaved 16-bit stereo-or-mono PCM of the first audio track, and its rate. */
     private fun decodeAudio(f: File): Pair<ShortArray, Int> {
         val ex = android.media.MediaExtractor()
@@ -339,6 +422,13 @@ class PersonExportTest {
         return g > 170 && r < 90 && b < 90
     }
 
+    private fun isMagenta(c: Int): Boolean {
+        val r = (c shr 16) and 0xff
+        val g = (c shr 8) and 0xff
+        val b = c and 0xff
+        return r > 170 && b > 170 && g < 90
+    }
+
     private fun close(a: Int, b: Int): Boolean {
         val d = abs(((a shr 16) and 0xff) - ((b shr 16) and 0xff)) +
             abs(((a shr 8) and 0xff) - ((b shr 8) and 0xff)) +
@@ -350,5 +440,6 @@ class PersonExportTest {
 
     private companion object {
         const val GREEN = 0xFF00FF00.toInt()
+        const val MAGENTA = 0xFFFF00FF.toInt()
     }
 }

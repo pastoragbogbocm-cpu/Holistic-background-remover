@@ -36,7 +36,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     await tester.pump(const Duration(milliseconds: 100));
     // scroll through every section so all of it is built and laid out
-    for (var i = 0; i < 12; i++) {
+    for (var i = 0; i < 20; i++) {
       await tester.drag(find.byType(Scrollable).first, const Offset(0, -500));
       await tester.pump(const Duration(milliseconds: 50));
     }
@@ -55,4 +55,26 @@ void main() {
 
   testWidgets('editor fits with large system text', (tester) => openEditor(tester, image: '/bg.jpg', textScale: 1.4),
       timeout: const Timeout(Duration(seconds: 60)));
+
+  testWidgets('turning the outline on sends it to the preview', (tester) async {
+    final calls = <MethodCall>[];
+    tester.view.physicalSize = const Size(1080, 2340);
+    tester.view.devicePixelRatio = 2.75;
+    addTearDown(tester.view.reset);
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('hbr_engine'), (call) async {
+      calls.add(call);
+      return call.method == 'preview' ? _png : null;
+    });
+    await tester.pumpWidget(const MaterialApp(home: EditorScreen(path: '/x.mp4', info: info)));
+    await tester.pump(const Duration(milliseconds: 100));
+    final toggle = find.widgetWithText(SwitchListTile, 'Outline');
+    await tester.scrollUntilVisible(toggle, 300, scrollable: find.byType(Scrollable).first);
+    await tester.tap(toggle);
+    await tester.pump(const Duration(milliseconds: 400));
+    final last = calls.lastWhere((c) => c.method == 'preview');
+    final settings = (last.arguments as Map)['settings'] as Map;
+    expect(settings['outline'], {'argb': 0xFFFFFFFF, 'width': 0.012, 'glow': false});
+    expect(find.text('Thick'), findsOneWidget);
+    expect(find.text('Intro & outro'), findsOneWidget);
+  }, timeout: const Timeout(Duration(seconds: 60)));
 }

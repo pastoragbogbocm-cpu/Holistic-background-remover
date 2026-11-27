@@ -483,6 +483,136 @@ class Captions {
       Captions(enabled: enabled ?? this.enabled, cues: cues ?? this.cues, style: style ?? this.style);
 }
 
+/// A line or soft glow around the speaker.
+class Outline {
+  const Outline({this.enabled = false, this.argb = 0xFFFFFFFF, this.width = 0.012, this.glow = false});
+  final bool enabled;
+  final int argb;
+
+  /// Thickness as a fraction of the frame's short side.
+  final double width;
+  final bool glow;
+
+  static const thin = 0.006, medium = 0.012, thick = 0.02;
+
+  Map<String, Object?> toMap() =>
+      enabled ? {'outline': {'argb': argb, 'width': width, 'glow': glow}} : const {};
+
+  Outline copyWith({bool? enabled, int? argb, double? width, bool? glow}) => Outline(
+      enabled: enabled ?? this.enabled, argb: argb ?? this.argb, width: width ?? this.width, glow: glow ?? this.glow);
+}
+
+/// The animations between parts: id and label.
+const transitions = <(String, String)>[
+  ('cut', 'Cut'), ('fade', 'Fade'), ('black', 'Dip to black'), ('flash', 'Flash'),
+  ('slide', 'Slide'), ('push', 'Push'), ('up', 'Slide up'), ('zoomin', 'Zoom in'),
+  ('zoomout', 'Zoom out'), ('circle', 'Circle'), ('wipe', 'Wipe'), ('spin', 'Spin'),
+];
+
+/// A picture or video shown before or after the main video.
+class IntroClip {
+  const IntroClip({
+    required this.path,
+    this.isVideo = false,
+    this.durationS = 3,
+    this.motion = 'in',
+    this.fit = false,
+    this.transition = 'fade',
+    this.videoLengthS,
+  });
+  final String path;
+  final bool isVideo;
+
+  /// How long a picture shows.
+  final double durationS;
+
+  /// 'none', 'in' (slow zoom in) or 'out' (slow zoom out); pictures only.
+  final String motion;
+
+  /// true: whole picture over a blurred copy; false: fills the frame.
+  final bool fit;
+
+  /// Animation into this clip.
+  final String transition;
+
+  /// Length of a video clip (for display only).
+  final double? videoLengthS;
+
+  double get lengthS => isVideo ? (videoLengthS ?? 0).clamp(0, 60).toDouble() : durationS;
+
+  Map<String, Object?> toMap() => {
+        'kind': isVideo ? 'video' : 'image',
+        'path': path,
+        'durationS': durationS,
+        'motion': motion,
+        'fit': fit,
+        'transition': transition,
+        'maxS': 60,
+      };
+
+  IntroClip copyWith({double? durationS, String? motion, bool? fit, String? transition}) => IntroClip(
+        path: path,
+        isVideo: isVideo,
+        durationS: durationS ?? this.durationS,
+        motion: motion ?? this.motion,
+        fit: fit ?? this.fit,
+        transition: transition ?? this.transition,
+        videoLengthS: videoLengthS,
+      );
+}
+
+/// Pictures and videos before and after the main video, and the animations.
+class Sequence {
+  const Sequence({
+    this.before = const [],
+    this.after = const [],
+    this.into = 'fade',
+    this.fadeIn = false,
+    this.fadeOut = false,
+    this.transitionS = 0.8,
+  });
+  final List<IntroClip> before;
+  final List<IntroClip> after;
+
+  /// Animation from the intro into the main video.
+  final String into;
+  final bool fadeIn;
+  final bool fadeOut;
+  final double transitionS;
+
+  bool get active => before.isNotEmpty || after.isNotEmpty || fadeIn || fadeOut;
+
+  Map<String, Object?> toMap() => active
+      ? {
+          'sequence': {
+            'before': [for (final c in before) c.toMap()],
+            'after': [for (final c in after) c.toMap()],
+            'into': into,
+            'fadeIn': fadeIn,
+            'fadeOut': fadeOut,
+            'transitionS': transitionS,
+          },
+        }
+      : const {};
+
+  Sequence copyWith({
+    List<IntroClip>? before,
+    List<IntroClip>? after,
+    String? into,
+    bool? fadeIn,
+    bool? fadeOut,
+    double? transitionS,
+  }) =>
+      Sequence(
+        before: before ?? this.before,
+        after: after ?? this.after,
+        into: into ?? this.into,
+        fadeIn: fadeIn ?? this.fadeIn,
+        fadeOut: fadeOut ?? this.fadeOut,
+        transitionS: transitionS ?? this.transitionS,
+      );
+}
+
 /// Progress of a running export.
 class ExportProgress {
   const ExportProgress({
@@ -551,13 +681,14 @@ class HbrEngine {
     MatteSettings settings = const MatteSettings(),
     OutputFrame frame = const OutputFrame(),
     Captions captions = const Captions(),
+    Outline outline = const Outline(),
     int maxSize = 960,
   }) async {
     final bytes = await _channel.invokeMethod<Uint8List>('preview', {
       'path': path,
       'timeMs': timeMs,
       'background': background.toMap(),
-      'settings': {...settings.toMap(), ...frame.toMap(), ...captions.toMap()},
+      'settings': {...settings.toMap(), ...frame.toMap(), ...captions.toMap(), ...outline.toMap()},
       'maxSize': maxSize,
     });
     return bytes;
@@ -576,6 +707,8 @@ class HbrEngine {
     OutputFrame frame = const OutputFrame(),
     Soundtrack soundtrack = const Soundtrack(),
     Captions captions = const Captions(),
+    Outline outline = const Outline(),
+    Sequence sequence = const Sequence(),
   }) async* {
     final jobId = DateTime.now().microsecondsSinceEpoch.toString();
     final events = _allProgress.where((e) => e.jobId == jobId);
@@ -587,7 +720,14 @@ class HbrEngine {
         'input': inputPath,
         'output': outputPath,
         'background': background.toMap(),
-        'settings': {...settings.toMap(), ...frame.toMap(), ...soundtrack.toMap(), ...captions.toMap()},
+        'settings': {
+          ...settings.toMap(),
+          ...frame.toMap(),
+          ...soundtrack.toMap(),
+          ...captions.toMap(),
+          ...outline.toMap(),
+          ...sequence.toMap(),
+        },
       });
       await for (final e in controller.stream) {
         yield e;
